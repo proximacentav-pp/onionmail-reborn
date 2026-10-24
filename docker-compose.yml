@@ -1,0 +1,37 @@
+name: onionmail-reborn
+
+services:
+  onionmail:
+    build: .
+    image: onionmail-reborn:1.12
+    container_name: onionmail
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ONIONMAIL_NICK: ${ONIONMAIL_NICK:-onionmail}
+    # Host networking is required: the container talks to the host's tor
+    # on 127.0.0.1:9050 and the host tor forwards the .onion service here.
+    network_mode: host
+    volumes:
+      - om-etc:/etc/onionmail
+      - om-lib:/var/lib/onionmail
+      - om-mail:/var/onionmail
+      - om-log:/var/log/onionmail
+      - om-tor:/var/lib/tor
+    # Intentionally no published ports: SMTP/POP3/web are reachable
+    # only through the Tor hidden service published by the host tor.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+    stop_grace_period: 30s
+
+volumes:
+  om-etc:
+  om-lib:
+  om-mail:
+  om-log:
+  om-tor:
