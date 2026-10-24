@@ -92,6 +92,6 @@ onionmail_*.deb*              пакет OnionMail и контрольная с�
 
 ## Скриншоты
 
-![главный экран](main_page.png)
+![главный экран](main-page.png)
 ![лимиты(их можно менять)](limits.png)
 ![настройка tui](om-setup.png)
