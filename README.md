@@ -24,7 +24,7 @@ Docker-сборка OnionMail 1.12 с улучшенными веб-интерф
 
 ```bash
 cp .env.example .env
-# укажите параметры в .env под ваш сервер (все равно потом можно все это указать по docker exec (название контейнера) om setup)
+# укажите параметры в .env под ваш сервер (все это можно указать по docker exec (название контейнера) om setup)
 docker compose build
 docker compose up -d
 ```
@@ -92,5 +92,6 @@ onionmail_*.deb*              пакет OnionMail и контрольная с�
 
 ## Скриншоты
 
-![главный экран][main_screen.png]
+![главный экран][main_page.png]
 ![лимиты(их можно менять)][limits.png]
+![настройка tui][om-setup.png]
