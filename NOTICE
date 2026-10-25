@@ -1,0 +1,34 @@
+OnionMail Reborn
+===============
+
+Copyright (C) 2026 OnionMail Reborn contributors.
+
+This project is licensed under the GNU General Public License, version 3
+or later. See LICENSE for the full license text.
+
+Upstream components
+-------------------
+
+OnionMail 1.12
+  Copyright 2013 Tramaci.org
+  Copyright 2021 OnionMail Project & mes3hacklab
+  License: GPL-3.0+
+  Upstream: https://www.onionmail.info
+
+The Debian package `onionmail_1.12.0-1_all.deb` is redistributed unmodified.
+It contains the compiled original Java backend. Its corresponding source code
+is maintained by the OnionMail project at the upstream URL above.
+
+Theme assets
+------------
+
+The cloud images under `theme/` are derived from the OnionMail web interface
+and are distributed under the same GPL-3.0+ terms. The `sun.svg` and `moon.svg`
+icons are part of OnionMail Reborn.
+
+Trademarks
+----------
+
+OnionMail is the name of the upstream project. This repository is an
+independent fork and is not affiliated with or endorsed by the upstream
+authors. The GPL applies to code, not to trademark rights.
