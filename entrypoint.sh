@@ -19,6 +19,15 @@ TOR_LOG="/var/log/onionmail/tor.log"
 
 log() { echo "[onionmail] $*"; }
 
+escape_sed() {
+  local s="$1"
+  s=${s//\\/\\\\}
+  s=${s//&/\\&}
+  s=${s//|/\\|}
+  s=${s//#/\\#}
+  printf '%s' "$s"
+}
+
 restore_seed() {
   local src="$1" dst="$2"
   mkdir -p "$dst"
@@ -162,7 +171,7 @@ if [ ! -f "${MAILDIR}/server.bin" ]; then
       -e "s#__SMTP__#${SMTP_PORT}#g" \
       -e "s#__POP3__#${POP3_PORT}#g" \
       -e "s#__SSL_CC__#XX#g" \
-      -e "s#__SSL_ORG__#${DISPLAY_NAME} OnionMail server#g" \
+      -e "s#__SSL_ORG__#$(escape_sed "$DISPLAY_NAME") OnionMail server#g" \
       -e "s#__SSL_UNI__#Mail#g" \
       -e "s#__SSL_STA__#OnionLand#g" \
       -e "s#__HTTP__#${HTTP_BACKEND_PORT}#g" \
@@ -207,7 +216,7 @@ elif [ -f "$SERVERS_CONF" ]; then
     "$SERVERS_CONF"
 fi
 
-sed -i "s|^HTTPServerName.*|HTTPServerName ${DISPLAY_NAME} onionmail server|" /etc/onionmail/http.conf
+sed -i "s|^HTTPServerName.*|HTTPServerName $(escape_sed "$DISPLAY_NAME") onionmail server|" /etc/onionmail/http.conf
 if [ ! -f /etc/onionmail/om.json ]; then
   sed -i "s/^\(AutoDeleteReaded\)[[:space:]].*/\1\tno/" /etc/onionmail/pop3.conf
 fi
@@ -224,9 +233,11 @@ fi
 
 # Brand the static pages: replace the nickname placeholder, but keep the
 # /<!--#NICK#-->.pem and /<!--#NICK#-->.asc URLs so the server can resolve them.
+export OM_DISPLAY_NAME="$DISPLAY_NAME"
 find "$WWWROOT" -type f -name '*.html' -print0 | while IFS= read -r -d '' f; do
-  perl -0pi -e "s{(?<!/)<!--#NICK#-->}{${DISPLAY_NAME}}g" "$f"
+  perl -0pi -e 's{(?<!/)<!--#NICK#-->}{$ENV{OM_DISPLAY_NAME}}g' "$f"
 done
+unset OM_DISPLAY_NAME
 
 # The upstream Logon page is the sysop/admin panel. It authenticates with the
 # POP3 password, not the SMTP password; label it to avoid confusion.
@@ -270,7 +281,9 @@ for _ in $(seq 1 60); do
 done
 
 log "starting the front on 127.0.0.1:${WEB_PORT} (onion port 80)"
-su debian-onionmail -c "env ONIONMAIL_NICK='${NICK}' ONIONMAIL_DISPLAY_NAME='${DISPLAY_NAME}' ONIONMAIL_THEME='${DEFAULT_THEME}' WEB_PORT='${WEB_PORT}' /usr/local/bin/om-front" &
+NICK_SH=${NICK//\'/\'\\\'\'}
+DISPLAY_SH=${DISPLAY_NAME//\'/\'\\\'\'}
+su debian-onionmail -c "env ONIONMAIL_NICK='${NICK_SH}' ONIONMAIL_DISPLAY_NAME='${DISPLAY_SH}' ONIONMAIL_THEME='${DEFAULT_THEME}' WEB_PORT='${WEB_PORT}' /usr/local/bin/om-front" &
 FRONT_PID=$!
 
 cleanup() {

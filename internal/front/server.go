@@ -65,6 +65,9 @@ type Server struct {
 	httpMu                       sync.Mutex
 	http2, http403, http4, http5 int64
 	statsMu                      sync.Mutex
+
+	loginMu       sync.Mutex
+	loginFailures map[string][]time.Time
 }
 
 type Session struct {
@@ -125,6 +128,8 @@ func NewServer() (*Server, error) {
 		TLS:      &tls.Config{InsecureSkipVerify: true},
 		Log:      os.Stdout,
 		sessions: map[string]*Session{},
+
+		loginFailures: map[string][]time.Time{},
 	}
 	s.Onion, err = s.readOnion()
 	if err != nil {
@@ -324,6 +329,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			s.registerPost(ctx, w, r)
 		case path == "/admin/storage.html":
 			s.adminDashboard(ctx, w, r)
+		case path == "/logon.html":
+			s.logonProxy(ctx, w, r)
 		case strings.HasPrefix(path, "/web/"):
 			s.webPost(ctx, w, r, path)
 		default:
@@ -347,7 +354,22 @@ func themeBustURL(next, theme string) string {
 }
 
 func safeNext(n string) string {
+	if n == "" || len(n) > 2048 {
+		return "/"
+	}
 	if !strings.HasPrefix(n, "/") || strings.HasPrefix(n, "//") {
+		return "/"
+	}
+	for _, r := range n {
+		if r < 0x20 || r == 0x7f || r == '\\' {
+			return "/"
+		}
+	}
+	u, err := url.Parse(n)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" {
+		return "/"
+	}
+	if strings.HasPrefix(u.Path, "//") {
 		return "/"
 	}
 	return n
@@ -389,6 +411,8 @@ func (s *Server) sendBytes(w http.ResponseWriter, r *http.Request, code int, dat
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 	for _, kv := range extra {
 		w.Header().Add(kv[0], kv[1])
 	}
@@ -619,6 +643,12 @@ func (s *Server) relay(ctx *reqCtx, w http.ResponseWriter, r *http.Request, stat
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	if w.Header().Get("Content-Security-Policy") == "" {
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'")
+	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(status)
 	if r.Method != http.MethodHead {
@@ -703,6 +733,96 @@ func randomToken(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+const (
+	loginWindow      = 10 * time.Minute
+	loginMaxFailures = 10
+	loginMapLimit    = 4096
+)
+
+func (s *Server) loginBlocked(key string) bool {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	now := time.Now()
+	arr := s.loginFailures[key]
+	kept := arr[:0]
+	for _, t := range arr {
+		if now.Sub(t) < loginWindow {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) == 0 {
+		delete(s.loginFailures, key)
+		return false
+	}
+	s.loginFailures[key] = kept
+	return len(kept) >= loginMaxFailures
+}
+
+func (s *Server) loginFailed(key string) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	now := time.Now()
+	arr := s.loginFailures[key]
+	kept := arr[:0]
+	for _, t := range arr {
+		if now.Sub(t) < loginWindow {
+			kept = append(kept, t)
+		}
+	}
+	kept = append(kept, now)
+	if len(kept) > loginMaxFailures {
+		kept = kept[len(kept)-loginMaxFailures:]
+	}
+	s.loginFailures[key] = kept
+	if len(s.loginFailures) > loginMapLimit {
+		for k, v := range s.loginFailures {
+			if len(v) == 0 || now.Sub(v[len(v)-1]) >= loginWindow {
+				delete(s.loginFailures, k)
+			}
+		}
+		for k := range s.loginFailures {
+			if len(s.loginFailures) <= loginMapLimit {
+				break
+			}
+			delete(s.loginFailures, k)
+		}
+	}
+}
+
+func (s *Server) loginSucceeded(key string) {
+	s.loginMu.Lock()
+	delete(s.loginFailures, key)
+	s.loginMu.Unlock()
+}
+
+func (s *Server) logonProxy(ctx *reqCtx, w http.ResponseWriter, r *http.Request) {
+	body := s.readBody(r, 300_000)
+	fields, _ := parseQuery(string(body))
+	user := strings.ToLower(strings.TrimSpace(firstVal(fields, "om-lo")))
+	key := "logon:" + user
+	if user != "" && s.loginBlocked(key) {
+		s.logf("logon rate limited: %q", user)
+		s.sendHTML(w, r, 429, s.smallPage(ctx, ctx.t("Access denied"),
+			ctx.t("Too many sign-in attempts. Try again in a few minutes.")), [][2]string{{"Retry-After", "600"}})
+		return
+	}
+	status, headers, data, err := s.fetchUpstream(r, body, "", http.MethodPost)
+	if err != nil {
+		s.logf("upstream error: %v", err)
+		s.sendHTML(w, r, 502, "<h1>502</h1><p>OnionMail HTTP is not reachable.</p>", nil)
+		return
+	}
+	if user != "" {
+		failed := status >= 400 || bytes.Contains(data, []byte(`name="om-lo"`)) || bytes.Contains(data, []byte(`id="perrostr"`))
+		if failed {
+			s.loginFailed(key)
+		} else if status < 400 {
+			s.loginSucceeded(key)
+		}
+	}
+	s.relay(ctx, w, r, status, headers, data)
 }
 
 func (s *Server) langSelector(ctx *reqCtx) string {

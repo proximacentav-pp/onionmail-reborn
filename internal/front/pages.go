@@ -13,6 +13,8 @@ import (
 
 const regLoginRow = `<tr><td>Login:</td><td><input type="text" name="om-localpart" size="40"></td></tr>`
 
+var voucherRe = regexp.MustCompile(`^[A-Za-z0-9._~+/=:@-]{1,128}$`)
+
 func (s *Server) regExitRow(ctx *reqCtx) string {
 	hint := ctx.tf("Only for the @{domain} address. To sign in at /web use the main login (without @).", map[string]string{"domain": ExitDomain})
 	return `<tr><td>` + html.EscapeString(ctx.t("Exit login")) + `:</td><td><input type="text" name="om-exitlogin" size="40" placeholder="for @` + ExitDomain + `"></td></tr>` +
@@ -75,6 +77,11 @@ func (s *Server) registerPost(ctx *reqCtx, w http.ResponseWriter, r *http.Reques
 	raw := s.readBody(r, 300_000)
 	fields, _ := parseQuery(string(raw))
 	login := strings.ToLower(strings.TrimSpace(firstVal(fields, "om-localpart")))
+	if !userRe.MatchString(login) {
+		s.sendHTML(w, r, 400, s.smallPage(ctx, ctx.t("Register"),
+			ctx.t("Login: 3–16 characters, Latin letters/digits/._-, no @.")), nil)
+		return
+	}
 	reg := s.registration()
 	if !omcoreBoolDefault(reg, "exit_name_enabled", true) {
 		delete(fields, "om-exitlogin")
@@ -91,12 +98,13 @@ func (s *Server) registerPost(ctx *reqCtx, w http.ResponseWriter, r *http.Reques
 		exitlogin = ""
 	}
 	voucherCode := strings.TrimSpace(firstVal(fields, "om-voucher"))
-	if omcoreBoolDefault(reg, "voucher_required", false) && voucherCode == "" {
-		s.sendHTML(w, r, 400, s.smallPage(ctx, ctx.t("Voucher required"), ctx.t("Registration is available only with a valid voucher code.")), nil)
-		return
-	}
-	if omcoreBoolDefault(reg, "voucher_required", false) && voucherCode != "" {
-		if reply, err := s.controlCommand("voucherchk "+voucherCode, 10*time.Second); err == nil && !strings.HasPrefix(reply, "+OK") {
+	if omcoreBoolDefault(reg, "voucher_required", false) {
+		if voucherCode == "" || !voucherRe.MatchString(voucherCode) {
+			s.sendHTML(w, r, 400, s.smallPage(ctx, ctx.t("Voucher required"), ctx.t("Registration is available only with a valid voucher code.")), nil)
+			return
+		}
+		reply, err := s.controlCommand("voucherchk "+voucherCode, 10*time.Second)
+		if err != nil || !strings.HasPrefix(reply, "+OK") {
 			s.sendHTML(w, r, 400, s.smallPage(ctx, ctx.t("Voucher required"), ctx.t("This voucher code is invalid or expired. Ask the administrator for a new code.")), nil)
 			return
 		}
@@ -480,6 +488,12 @@ func (s *Server) webPost(ctx *reqCtx, w http.ResponseWriter, r *http.Request, pa
 			s.sendHTML(w, r, 400, s.loginPage(ctx, ctx.t("Fill in all fields and check the username.")), nil)
 			return
 		}
+		key := "web:" + user
+		if s.loginBlocked(key) {
+			s.logf("web login rate limited: user=%q", user)
+			s.sendHTML(w, r, 429, s.loginPage(ctx, ctx.t("Too many sign-in attempts. Try again in a few minutes.")), [][2]string{{"Retry-After", "600"}})
+			return
+		}
 		p, popPass, popErr := dialPOP3Any(user, pop3)
 		if popErr == nil {
 			p.quit()
@@ -500,6 +514,7 @@ func (s *Server) webPost(ctx *reqCtx, w http.ResponseWriter, r *http.Request, pa
 				stage = "smtp"
 			}
 			s.logf("web login failed: user=%q stage=%s", user, stage)
+			s.loginFailed(key)
 			if popErr != nil {
 				hint := ""
 				if reply, e := s.controlCommand("alias "+user, 10*time.Second); e == nil && strings.HasPrefix(reply, "+OK ") {
@@ -525,6 +540,7 @@ func (s *Server) webPost(ctx *reqCtx, w http.ResponseWriter, r *http.Request, pa
 		if smtpPass != "" {
 			smtp = smtpPass
 		}
+		s.loginSucceeded(key)
 		func() {
 			defer func() {
 				if rec := recover(); rec != nil {

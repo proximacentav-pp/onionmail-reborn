@@ -950,6 +950,9 @@ func ControlAs(nick, pass string, port int, cmd string, timeout time.Duration) (
 	if timeout <= 0 {
 		timeout = 8 * time.Second
 	}
+	if strings.ContainsAny(cmd, "\r\n\x00") {
+		return "", fmt.Errorf("invalid control command")
+	}
 	c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), timeout)
 	if err != nil {
 		return "", err

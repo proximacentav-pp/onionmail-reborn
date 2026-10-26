@@ -34,6 +34,9 @@ type pop3Conn struct {
 }
 
 func dialPOP3(user, pass string, timeout time.Duration) (*pop3Conn, error) {
+	if strings.ContainsAny(user, "\r\n\x00") || strings.ContainsAny(pass, "\r\n\x00") {
+		return nil, fmt.Errorf("invalid POP3 credentials")
+	}
 	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", pop3Port), timeout)
 	if err != nil {
 		return nil, err
