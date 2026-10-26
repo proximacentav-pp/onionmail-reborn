@@ -1,7 +1,8 @@
 # OnionMail Reborn
 
 Docker-сборка OnionMail 1.12 с улучшенными веб-интерфейсом, админ-панелью,
-многоязычным интерфейсом. С лицензией GPL-3.0; см. `LICENSE` и `NOTICE`.
+многоязычным интерфейсом. Версия CLI: `beta 0.3`.
+С лицензией GPL-3.0; см. `LICENSE` и `NOTICE`.
 
 ## Возможности
 
@@ -19,7 +20,10 @@ Docker-сборка OnionMail 1.12 с улучшенными веб-интерф
   внутри контейнера. `Reset logo` возвращает стандартный логотип OnionMail.
   Файл с хоста можно заранее скопировать:
   `docker cp logo.png onionmail:/tmp/logo.png`.
-- команды `om setup`, `om status`, `om restart`, `om check`
+- команды `om setup`, `om status`, `om -v`/`om --version`, `om check`,
+  `om ap disable|enable|hide|show|passwd|data`.
+- `om ap passwd` после смены пароля спрашивает `restart server to apply changes: Y/N:`;
+  при `N` сервер не перезапускается, при `Y` — перезапускается.
 ## Быстрый старт
 
 ```bash
@@ -75,12 +79,19 @@ sudo ./host_tor_setup.sh
 ## Структура
 
 ``` structure
-Dockerfile                    сборка образа
+Dockerfile                    сборка образа и Go-бинарников
 docker-compose.yml            запуск контейнера
 entrypoint.sh                 инициализация OnionMail, Tor, политик и front
-front.py                      веб-почта, прокси, темы, админ-панель
+cmd/om/                       CLI: setup, status, version, check, ap, voucher
+cmd/front/                    веб-почта, прокси, темы, админ-панель
+cmd/voucher/                  CLI выпуска/проверки voucher-кодов
+internal/omcore/              конфигурация, состояние и управление OnionMail
+internal/front/               сервер веб-интерфейса и страницы
+internal/olang/               локализация
+internal/omtui/               интерактивное меню setup
+languages.json                переводы интерфейса
 theme/                        локальные изображения облаков и иконки тем
-voucher.py                    CLI выпуска/проверки voucher-кодов
+front.py                      legacy Python front (не используется Docker-сборкой)
 host_tor_setup.sh             публикация hidden service на хосте
 onionmail_*.deb*              пакет OnionMail и контрольная сумма
 .env.example                  шаблон конфигурации

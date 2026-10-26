@@ -1,3 +1,13 @@
+FROM golang:1.27-bookworm AS build
+
+WORKDIR /src
+COPY go.mod ./
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/om ./cmd/om \
+ && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/om-front ./cmd/front \
+ && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/om-voucher ./cmd/voucher
+
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -5,7 +15,7 @@ ENV LANG=C.UTF-8
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates gnupg wget curl python3 openssl iproute2 \
+      ca-certificates gnupg wget curl openssl iproute2 \
       tor obfs4proxy default-jre cpulimit wipe libcap2-bin dnsutils \
       net-tools procps util-linux tini \
  && rm -rf /var/lib/apt/lists/*
@@ -27,11 +37,12 @@ RUN mkdir -p /opt/seed \
  && chmod -R a=rX /opt/seed
 
 COPY theme/ /usr/local/share/onionmail/theme/
+COPY --from=build /out/om /usr/local/bin/om
+COPY --from=build /out/om-front /usr/local/bin/om-front
+COPY --from=build /out/om-voucher /usr/local/bin/om-voucher
+COPY languages.json /usr/local/share/onionmail/languages.json
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY front.py /usr/local/share/onionmail/front.py
-COPY voucher.py /usr/local/bin/om-voucher
-COPY om.py /usr/local/bin/om
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/share/onionmail/front.py /usr/local/bin/om-voucher /usr/local/bin/om
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/om /usr/local/bin/om-front /usr/local/bin/om-voucher
 
 EXPOSE 25 110 80 18000 18001
 

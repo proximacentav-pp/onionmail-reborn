@@ -228,6 +228,15 @@ find "$WWWROOT" -type f -name '*.html' -print0 | while IFS= read -r -d '' f; do
   perl -0pi -e "s{(?<!/)<!--#NICK#-->}{${DISPLAY_NAME}}g" "$f"
 done
 
+# The upstream Logon page is the sysop/admin panel. It authenticates with the
+# POP3 password, not the SMTP password; label it to avoid confusion.
+if [ -f "${WWWROOT}/logon.html" ]; then
+  sed -i 's|<tr><td>Password:</td>|<tr><td>Password (POP3, not SMTP):</td>|' "${WWWROOT}/logon.html"
+  if ! grep -q 'Admin panel password is the POP3 password' "${WWWROOT}/logon.html"; then
+    sed -i 's|<p>Logon to |<div class="minfo">Admin panel password is the POP3 password, not the SMTP password.</div>\n<p>Logon to |' "${WWWROOT}/logon.html"
+  fi
+fi
+
 chown -R debian-onionmail:debian-onionmail "${WWWROOT}" 2>/dev/null || true
 
 mkdir -p /var/lib/onionmail/webmail/sent
@@ -261,7 +270,7 @@ for _ in $(seq 1 60); do
 done
 
 log "starting the front on 127.0.0.1:${WEB_PORT} (onion port 80)"
-su debian-onionmail -c "env ONIONMAIL_NICK='${NICK}' ONIONMAIL_DISPLAY_NAME='${DISPLAY_NAME}' ONIONMAIL_THEME='${DEFAULT_THEME}' WEB_PORT='${WEB_PORT}' python3 /usr/local/share/onionmail/front.py" &
+su debian-onionmail -c "env ONIONMAIL_NICK='${NICK}' ONIONMAIL_DISPLAY_NAME='${DISPLAY_NAME}' ONIONMAIL_THEME='${DEFAULT_THEME}' WEB_PORT='${WEB_PORT}' /usr/local/bin/om-front" &
 FRONT_PID=$!
 
 cleanup() {

@@ -961,6 +961,9 @@ a{color:#004488;text-decoration:none}
 .row .from{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row .subj{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row .date,.row .size{color:#7b8a9b;font-size:12px;text-align:right;white-space:nowrap}
+.pgp-badge{display:inline-block;margin-left:8px;padding:2px 7px;border-radius:999px;font-size:10.5px;font-weight:700;line-height:1.6;vertical-align:1px;white-space:nowrap}
+.pgp-encrypted,.pgp-signed{background:#eef1f4;color:#4b5b6b;border:1px solid #d5dde6}
+.pgp-keys{background:#e7f7ec;color:#1f6b3a;border:1px solid #9fd5b4;box-shadow:0 0 0 2px #eefaf2}
 .row.unread .from,.row.unread .subj{font-weight:700}
 .card{background:#fff;border:1px solid #d5dde6;border-radius:12px;padding:22px;max-width:900px}
 .card h2{margin:0 0 10px;font-size:19px;color:#16232f}
@@ -968,6 +971,7 @@ a{color:#004488;text-decoration:none}
 pre.body{white-space:pre-wrap;word-break:break-word;font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;color:#1f2d3a}
 label{display:block;font-size:12px;color:#5b6b7c;margin:12px 0 5px;font-weight:600}
 input[type=text],input[type=password],textarea{width:100%;border:1px solid #c9d5e2;border-radius:8px;padding:10px 12px;font:14px system-ui;background:#fbfdff;color:#1b2733}
+input[type=file]{font:14px system-ui;color:#31414f;padding:6px 0}
 textarea{min-height:260px;resize:vertical}
 .btn{background:#004488;color:#fff;border:0;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer}
 .btn:hover{background:#0058ad}
@@ -979,6 +983,11 @@ textarea{min-height:260px;resize:vertical}
 .login .brand{border:0;padding:0 0 14px}
 .login p{color:#5b6b7c;font-size:13px;margin:0 0 14px}
 .att{font-size:12px;color:#5b6b7c;margin-top:14px;border-top:1px solid #e7edf3;padding-top:10px}
+.att-title{font-weight:600;color:#425466;margin-bottom:7px}
+.attlist{list-style:none;padding:0;margin:0;display:flex;flex-wrap:wrap;gap:8px}
+.btn.small{padding:7px 11px;font-size:12.5px}
+.msghead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.msghead h2{margin:0 0 10px;flex:1 1 320px}
 .back{display:inline-block;margin-bottom:14px;font-size:13px}
 .langbox{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:0 0 6px}
 .langbox label{font-size:10.5px;font-weight:700;color:#748394;text-transform:uppercase;letter-spacing:.08em;margin:0}

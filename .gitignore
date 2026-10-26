@@ -3,3 +3,7 @@ __pycache__/
 *.py[cod]
 *.swp
 .DS_Store
+/om
+/front
+/om-front
+/om-voucher
