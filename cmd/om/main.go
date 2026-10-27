@@ -15,7 +15,7 @@ import (
 	"onionmail/internal/omtui"
 )
 
-const omVersion = "beta 0.5"
+const omVersion = "beta 0.6"
 
 func main() {
 	cmd := "help"
@@ -49,6 +49,7 @@ func main() {
 		fmt.Println("           om controlport ssh-port --set PORT | --show")
 		fmt.Println("           om controlport ssh-user --set USER | --show")
 		fmt.Println("           om controlport ssh-mode sshtunnel|unactive")
+		fmt.Println("           om controlport connect [--encrypted]")
 		fmt.Println("  voucher  manage vouchers:")
 		fmt.Println("           om voucher --gen --days N")
 		fmt.Println("           om voucher --rm CODE")

@@ -1159,7 +1159,9 @@
       "Required for a new mailbox; leave blank to keep the stored SMTP password.": "Für ein neues Postfach erforderlich; leer lassen, um das gespeicherte SMTP-Passwort zu behalten.",
       "Enter the SMTP password for a new mailbox.": "Geben Sie das SMTP-Passwort für ein neues Postfach ein.",
       "The SMTP and POP3 fields contain the same password. Enter the SMTP password separately — it is different from the POP3 password.": "Die Felder SMTP und POP3 enthalten dasselbe Passwort. Geben Sie das SMTP-Passwort separat ein – es unterscheidet sich vom POP3-Passwort.",
-      "Access denied": "Zugriff verweigert"
+      "Access denied": "Zugriff verweigert",
+      "Block webmail sign-in (/web)": "Webmail-Anmeldung sperren (/web)",
+      "Webmail sign-in is disabled for this account.": "Die Webmail-Anmeldung ist für dieses Konto deaktiviert."
     },
     "fr": {
       "Inbox": "Réception",
@@ -1291,7 +1293,9 @@
       "Required for a new mailbox; leave blank to keep the stored SMTP password.": "Obligatoire pour une nouvelle boîte ; laissez vide pour conserver le mot de passe SMTP enregistré.",
       "Enter the SMTP password for a new mailbox.": "Saisissez le mot de passe SMTP pour une nouvelle boîte.",
       "The SMTP and POP3 fields contain the same password. Enter the SMTP password separately — it is different from the POP3 password.": "Les champs SMTP et POP3 contiennent le même mot de passe. Saisissez le mot de passe SMTP séparément — il diffère du mot de passe POP3.",
-      "Access denied": "Accès refusé"
+      "Access denied": "Accès refusé",
+      "Block webmail sign-in (/web)": "Interdire la connexion au webmail (/web)",
+      "Webmail sign-in is disabled for this account.": "La connexion au webmail est désactivée pour ce compte."
     },
     "ru": {
       "Inbox": "Входящие",
@@ -1456,7 +1460,9 @@
       "Required for a new mailbox; leave blank to keep the stored SMTP password.": "Обязательно для нового ящика; оставьте пустым, чтобы сохранить ранее записанный SMTP-пароль.",
       "Enter the SMTP password for a new mailbox.": "Введите SMTP-пароль для нового ящика.",
       "The SMTP and POP3 fields contain the same password. Enter the SMTP password separately — it is different from the POP3 password.": "В полях SMTP и POP3 одинаковый пароль. Введите SMTP-пароль отдельно — он отличается от POP3-пароля.",
-      "Access denied": "Доступ запрещён"
+      "Access denied": "Доступ запрещён",
+      "Block webmail sign-in (/web)": "Запрет на вход через веб почту (/web)",
+      "Webmail sign-in is disabled for this account.": "Вход в веб-почту для этой учётной записи запрещён."
     },
     "es": {
       "Inbox": "Entrada",
@@ -1588,7 +1594,9 @@
       "Required for a new mailbox; leave blank to keep the stored SMTP password.": "Obligatorio para un buzón nuevo; déjelo vacío para conservar la contraseña SMTP guardada.",
       "Enter the SMTP password for a new mailbox.": "Introduzca la contraseña SMTP para un buzón nuevo.",
       "The SMTP and POP3 fields contain the same password. Enter the SMTP password separately — it is different from the POP3 password.": "Los campos SMTP y POP3 contienen la misma contraseña. Introduzca la contraseña SMTP por separado; es distinta de la de POP3.",
-      "Access denied": "Acceso denegado"
+      "Access denied": "Acceso denegado",
+      "Block webmail sign-in (/web)": "Bloquear el acceso al correo web (/web)",
+      "Webmail sign-in is disabled for this account.": "El acceso al correo web está deshabilitado para esta cuenta."
     }
   },
   "vendor": {

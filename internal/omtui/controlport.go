@@ -1,16 +1,15 @@
 package omtui
 
 import (
-	"bytes"
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"onionmail/internal/olang"
 	"onionmail/internal/omcore"
 )
 
@@ -138,7 +137,7 @@ func (u *UI) controlPortScreen(encrypted bool) {
 			return
 		}
 		var err error
-		conn, cleanup, err = openControlSSHTunnel(sshPort, port, sshUser)
+		conn, cleanup, err = omcore.OpenControlSSHTunnel(sshPort, port, sshUser)
 		if err != nil {
 			u.setMsg(u.t("SSH tunnel error")+": "+err.Error(), false)
 			return
@@ -162,81 +161,21 @@ func (u *UI) controlPortScreen(encrypted bool) {
 	u.setMsg("", true)
 }
 
-func freeLoopbackPort() (int, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
+// RunControlTelnet runs the built-in ControlPort telnet client for the CLI.
+func RunControlTelnet(st omcore.State, b *olang.Bundle, conn net.Conn, label string) int {
+	lang := omcore.StrDef(st, "lang", "ru")
+	if !b.HasLang(lang) {
+		lang = "en"
 	}
-	defer ln.Close()
-	addr, ok := ln.Addr().(*net.TCPAddr)
-	if !ok {
-		return 0, fmt.Errorf("cannot allocate a local port")
+	u := &UI{st: st, lang: lang, b: b, msgOK: true}
+	if !u.setupTerm() {
+		fmt.Fprintln(os.Stderr, "om controlport: cannot configure the terminal")
+		return 1
 	}
-	return addr.Port, nil
-}
-
-func openControlSSHTunnel(sshPort, ctrlPort int, user string) (net.Conn, func(), error) {
-	_, clientKey, knownHosts, _, _, _ := omcore.ControlSSHPaths()
-	if _, err := os.Stat(clientKey); err != nil {
-		return nil, nil, fmt.Errorf("SSH keys are not ready; restart the container after enabling")
-	}
-	if _, err := os.Stat(knownHosts); err != nil {
-		return nil, nil, fmt.Errorf("SSH host key is not known; restart the container after enabling")
-	}
-	localPort, err := freeLoopbackPort()
-	if err != nil {
-		return nil, nil, err
-	}
-	sshPath, err := exec.LookPath("ssh")
-	if err != nil {
-		return nil, nil, fmt.Errorf("ssh client not found")
-	}
-	args := []string{
-		"-i", clientKey,
-		"-p", strconv.Itoa(sshPort),
-		"-N",
-		"-o", "BatchMode=yes",
-		"-o", "IdentitiesOnly=yes",
-		"-o", "StrictHostKeyChecking=yes",
-		"-o", "UserKnownHostsFile=" + knownHosts,
-		"-o", "ExitOnForwardFailure=yes",
-		"-o", "ConnectTimeout=5",
-		"-o", "ServerAliveInterval=15",
-		"-o", "LogLevel=ERROR",
-		"-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", localPort, ctrlPort),
-		user + "@127.0.0.1",
-	}
-	cmd := exec.Command(sshPath, args...)
-	var errBuf bytes.Buffer
-	cmd.Stderr = &errBuf
-	if err := cmd.Start(); err != nil {
-		return nil, nil, err
-	}
-	waitCh := make(chan error, 1)
-	go func() { waitCh <- cmd.Wait() }()
-	addr := fmt.Sprintf("127.0.0.1:%d", localPort)
-	deadline := time.Now().Add(8 * time.Second)
-	for {
-		c, err := net.DialTimeout("tcp", addr, 400*time.Millisecond)
-		if err == nil {
-			cleanup := func() {
-				_ = cmd.Process.Kill()
-				<-waitCh
-			}
-			return c, cleanup, nil
-		}
-		select {
-		case werr := <-waitCh:
-			return nil, nil, fmt.Errorf("%v: %s", werr, strings.TrimSpace(errBuf.String()))
-		default:
-		}
-		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
-			<-waitCh
-			return nil, nil, fmt.Errorf("timeout: %s", strings.TrimSpace(errBuf.String()))
-		}
-		time.Sleep(120 * time.Millisecond)
-	}
+	defer u.restoreTerm()
+	u.termSize()
+	u.controlTelnet(conn, label)
+	return 0
 }
 
 func (u *UI) controlTelnet(conn net.Conn, label string) {

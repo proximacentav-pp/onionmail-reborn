@@ -22,6 +22,10 @@ func (s *Server) regExitRow(ctx *reqCtx) string {
 		`<tr><td></td><td><span style="font-size:12px;color:#748394">` + html.EscapeString(hint) + `</span></td></tr>`
 }
 
+func (s *Server) regWebBlockRow(ctx *reqCtx) string {
+	return `<tr><td></td><td><label style="display:flex;gap:7px;align-items:center;font-size:12px;color:#5b6b7c"><input type="checkbox" name="om-noweb" value="1"> ` + html.EscapeString(ctx.t("Block webmail sign-in (/web)")) + `</label></td></tr>`
+}
+
 func (s *Server) smallPage(ctx *reqCtx, title, message string) string {
 	return `<!doctype html><html lang="` + ctx.lang + `"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
 		`<title>` + html.EscapeString(title) + `</title><style>` + ctx.themeCSS(SMALL_CSS) + `</style></head><body><div class="b"><h1>` + html.EscapeString(title) +
@@ -37,8 +41,12 @@ func (s *Server) registerPage(ctx *reqCtx, w http.ResponseWriter, r *http.Reques
 	}
 	reg := s.registration()
 	if status == 200 {
-		if omcoreBoolDefault(reg, "exit_name_enabled", true) && bytes.Contains(data, []byte(regLoginRow)) {
-			data = bytes.Replace(data, []byte(regLoginRow), []byte(regLoginRow+"\n\t"+s.regExitRow(ctx)), 1)
+		if bytes.Contains(data, []byte(regLoginRow)) {
+			extra := "\n\t" + s.regWebBlockRow(ctx)
+			if omcoreBoolDefault(reg, "exit_name_enabled", true) {
+				extra += "\n\t" + s.regExitRow(ctx)
+			}
+			data = bytes.Replace(data, []byte(regLoginRow), []byte(regLoginRow+extra), 1)
 		}
 		if !omcoreBoolDefault(reg, "exit_enabled", true) {
 			data = regexp.MustCompile(`(?s)<tr><td>Exit Server:</td>.*?</tr>`).ReplaceAll(data, nil)
@@ -83,6 +91,8 @@ func (s *Server) registerPost(ctx *reqCtx, w http.ResponseWriter, r *http.Reques
 		return
 	}
 	reg := s.registration()
+	blockWeb := firstVal(fields, "om-noweb") != ""
+	delete(fields, "om-noweb")
 	if !omcoreBoolDefault(reg, "exit_name_enabled", true) {
 		delete(fields, "om-exitlogin")
 	}
@@ -189,6 +199,7 @@ func (s *Server) registerPost(ctx *reqCtx, w http.ResponseWriter, r *http.Reques
 			if noExit {
 				s.clearUserExit(login)
 			}
+			s.setWebmailBlocked(login, blockWeb)
 		}()
 	}
 	s.relay(ctx, w, r, status, headers, data)
@@ -486,6 +497,11 @@ func (s *Server) webPost(ctx *reqCtx, w http.ResponseWriter, r *http.Request, pa
 		pop3 := firstVal(f, "pop3")
 		if !userRe.MatchString(user) || smtp == "" || pop3 == "" {
 			s.sendHTML(w, r, 400, s.loginPage(ctx, ctx.t("Fill in all fields and check the username.")), nil)
+			return
+		}
+		if s.webmailBlocked(user) {
+			s.logf("web login blocked: user=%q", user)
+			s.sendHTML(w, r, 403, s.loginPage(ctx, ctx.t("Webmail sign-in is disabled for this account.")), nil)
 			return
 		}
 		key := "web:" + user

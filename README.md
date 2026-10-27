@@ -43,7 +43,13 @@ Docker-сборка OnionMail 1.12 с улучшенными веб-интерф
   ECDSA-secp256k1/P-192/Curve224 в списке есть, но OpenSSH их не
   поддерживает. Ручное подключение:
   `ssh -p 9011 -N -L 19010:127.0.0.1:9010 om@127.0.0.1`, затем
-  `telnet 127.0.0.1 19010`.
+  `telnet 127.0.0.1 19010`. Из CLI: `om controlport connect` (обычный
+  telnet-клиент) и `om controlport connect-enc` (через SSH-туннель).
+  В обоих клиентах `Ctrl+A` — справка, `Ctrl+]` — выход.
+- В форме регистрации `/register.html` есть чекбокс
+  `Запрет на вход через веб почту (/web)`. Если он отмечен, front
+  отклоняет вход этой учётной записи в `/web` (POP3/SMTP продолжают
+  работать); флаг хранится в `webmail/registry.json`.
 - команды: om  setup    interactive purple TUI
   om status   show current state
   version  show om and OnionMail versions
@@ -62,6 +68,8 @@ Docker-сборка OnionMail 1.12 с улучшенными веб-интерф
            om controlport ssh-auth password|key
            om controlport ssh-algo ALGORITHM
            om controlport ssh-key --show | --set PUBKEY | --rm
+           om controlport connect [--encrypted]
+           om controlport connect-enc
   om voucher  manage vouchers:
            om voucher --gen --days N
            om voucher --rm CODE

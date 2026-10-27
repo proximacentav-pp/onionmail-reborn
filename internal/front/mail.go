@@ -1124,6 +1124,42 @@ func (s *Server) registerUser(login, smtp, pop3, exitlogin string, lastLogin int
 	return true
 }
 
+func (s *Server) webmailBlocked(login string) bool {
+	login = strings.ToLower(strings.TrimSpace(login))
+	if !userRe.MatchString(login) {
+		return false
+	}
+	s.regMu.Lock()
+	defer s.regMu.Unlock()
+	data := s.loadRegistry()
+	entry := data.Users[login]
+	return entry != nil && omcoreBoolDefault(entry, "webmail_blocked", false)
+}
+
+func (s *Server) setWebmailBlocked(login string, blocked bool) {
+	login = strings.ToLower(strings.TrimSpace(login))
+	if !userRe.MatchString(login) {
+		return
+	}
+	s.regMu.Lock()
+	defer s.regMu.Unlock()
+	data := s.loadRegistry()
+	entry := data.Users[login]
+	if entry == nil {
+		if !blocked {
+			return
+		}
+		entry = map[string]any{}
+	}
+	if blocked {
+		entry["webmail_blocked"] = true
+	} else {
+		delete(entry, "webmail_blocked")
+	}
+	data.Users[login] = entry
+	_ = s.saveRegistry(data)
+}
+
 func (s *Server) controlStat(timeout time.Duration) map[string]any {
 	pass := ""
 	for _, line := range strings.Split(omcore.Read(s.ServerDir), "\n") {

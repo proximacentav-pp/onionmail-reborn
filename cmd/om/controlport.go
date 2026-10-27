@@ -24,6 +24,8 @@ func controlportCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "  om controlport ssh-auth password|key")
 		fmt.Fprintln(os.Stderr, "  om controlport ssh-algo <algorithm>")
 		fmt.Fprintln(os.Stderr, "  om controlport ssh-key --show | --set <public-key> | --rm")
+		fmt.Fprintln(os.Stderr, "  om controlport connect [--encrypted]")
+		fmt.Fprintln(os.Stderr, "  om controlport connect-enc")
 		fmt.Fprintln(os.Stderr, "  om controlport status")
 	}
 	if len(args) == 0 {
@@ -161,6 +163,27 @@ func controlportCmd(args []string) int {
 		}
 	case "ssh-key":
 		return controlportKeyCmd(st, args[1:])
+	case "connect":
+		encrypted := false
+		for _, a := range args[1:] {
+			switch a {
+			case "--encrypted", "--ssh":
+				encrypted = true
+			case "-h", "--help":
+				usage()
+				return 0
+			default:
+				fmt.Fprintln(os.Stderr, "om controlport: connect accepts only --encrypted")
+				return 1
+			}
+		}
+		return controlportConnect(st, encrypted)
+	case "connect-enc", "connect-ssh":
+		if len(args) > 1 {
+			fmt.Fprintln(os.Stderr, "om controlport: connect-enc takes no arguments")
+			return 1
+		}
+		return controlportConnect(st, true)
 	case "status", "show":
 		return controlportStatus()
 	default:
