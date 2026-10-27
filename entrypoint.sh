@@ -374,8 +374,9 @@ else
   control_up=0
   for _ in $(seq 1 90); do
     if ! kill -0 "$OM_PID" 2>/dev/null; then
-      log "FATAL: OnionMail exited during startup; see /var/log/onionmail/start.log"
-      exit 1
+      tor_error "OnionMail exited during startup; see /var/log/onionmail/start.log"
+      KEEP_ALIVE=1
+      break
     fi
     if timeout 2 bash -c "exec 3<>/dev/tcp/${CTRL_IP}/${CTRL_PORT}" 2>/dev/null; then
       control_up=1
@@ -384,8 +385,8 @@ else
     sleep 1
   done
   if [ "$control_up" != "1" ]; then
-    log "FATAL: control port ${CTRL_IP}:${CTRL_PORT} did not open in time"
-    exit 1
+    tor_error "control port ${CTRL_IP}:${CTRL_PORT} did not open in time; OnionMail may still be booting"
+    KEEP_ALIVE=1
   fi
 
   # TLS certificate SHA-1, shown to new users so they can pin it.
@@ -406,8 +407,9 @@ else
   http_up=0
   for _ in $(seq 1 90); do
     if ! kill -0 "$OM_PID" 2>/dev/null; then
-      log "FATAL: OnionMail exited during startup; see /var/log/onionmail/start.log"
-      exit 1
+      tor_error "OnionMail exited during startup; see /var/log/onionmail/start.log"
+      KEEP_ALIVE=1
+      break
     fi
     if timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/${HTTP_BACKEND_PORT}" 2>/dev/null; then
       http_up=1
@@ -416,8 +418,8 @@ else
     sleep 1
   done
   if [ "$http_up" != "1" ]; then
-    log "FATAL: built-in HTTP server 127.0.0.1:${HTTP_BACKEND_PORT} did not open in time"
-    exit 1
+    tor_error "built-in HTTP server 127.0.0.1:${HTTP_BACKEND_PORT} did not open in time"
+    KEEP_ALIVE=1
   fi
 fi
 
@@ -438,6 +440,9 @@ trap cleanup TERM INT
 
 if [ "$SKIP_TOR" = "1" ]; then
   log "ready: localhost only (Tor skipped)"
+  wait "$FRONT_PID"
+elif [ "${KEEP_ALIVE:-0}" = "1" ]; then
+  log "ready: front only (OnionMail control unavailable)"
   wait "$FRONT_PID"
 else
   log "ready: ${ONION}"
