@@ -184,6 +184,7 @@ func (s *Server) Serve() error {
 	}()
 	addr := "127.0.0.1:" + s.Port
 	fmt.Fprintf(s.Log, "front ready for %s (webmail /web, upstream %s)\n", s.Onion, s.Upstream)
+	go s.startControlGate()
 	go s.serverStatsLoop()
 	srv := &http.Server{Addr: addr, Handler: s}
 	return srv.ListenAndServe()
@@ -568,16 +569,7 @@ func (s *Server) controlCommand(cmd string, timeout time.Duration) (string, erro
 			break
 		}
 	}
-	port := 9010
-	for _, line := range strings.Split(omcore.Read(s.ControlConf), "\n") {
-		p := strings.Fields(line)
-		if len(p) >= 2 && strings.EqualFold(p[0], "controlport") {
-			if n, err := strconv.Atoi(p[1]); err == nil {
-				port = n
-			}
-			break
-		}
-	}
+	port := omcore.ControlPort()
 	if pass == "" {
 		return "", fmt.Errorf("service password not found")
 	}

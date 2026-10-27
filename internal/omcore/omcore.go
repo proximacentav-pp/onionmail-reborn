@@ -34,6 +34,25 @@ const (
 	DefaultLogo      = "/img/OM-BL.gif"
 	DefaultSmallLogo = ""
 	LogoMaxBytes     = 5 * 1024 * 1024
+
+	// The upstream OnionMail control service listens on a private loopback
+	// address.  The front owns the public loopback address and only proxies
+	// there while ControlPort is enabled.
+	ControlLocalIP     = "127.0.0.1"
+	ControlUpstreamIP  = "127.0.0.2"
+	DefaultControlPort = 9010
+
+	// Optional SSH wrapper around the control port.  The SSH daemon binds
+	// 127.0.0.1 only and allows forwarding solely to the control port.
+	DefaultSSHPort     = 9011
+	DefaultSSHUser     = "om"
+	ControlSSHDir      = "/etc/onionmail/ssh"
+	controlHostKey     = ControlSSHDir + "/control_host_ed25519_key"
+	controlTUIKey      = ControlSSHDir + "/tui_ed25519"
+	controlKnownHosts  = ControlSSHDir + "/tui_known_hosts"
+	controlSSHDConf    = ControlSSHDir + "/sshd.conf"
+	controlSSHHomeRoot = "/var/lib/onionmail/ssh-home"
+	controlManagedUser = ControlSSHDir + "/managed_user"
 )
 
 var DefaultLangs = []string{"ru", "de", "fr", "en", "es"}
@@ -156,6 +175,239 @@ func ParseKV(text, key string) string {
 		return ""
 	}
 	return m[1]
+}
+
+func controlConfPort() int {
+	v := ParseKV(Read(ControlConf), "ControlPort")
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1024 || n > 65535 {
+		return DefaultControlPort
+	}
+	return n
+}
+
+func controlConfRootPass() string {
+	for _, line := range strings.Split(Read(ControlConf), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && strings.EqualFold(f[0], "RootPass") {
+			return f[1]
+		}
+	}
+	return ""
+}
+
+func ControlFromState(st State) (enabled bool, port int) {
+	ctrl := Obj(st, "control")
+	enabled = Bool(ctrl, "enabled", true)
+	port = Int(ctrl, "port", 0)
+	if port < 1024 || port > 65535 {
+		port = controlConfPort()
+	}
+	return enabled, port
+}
+
+func ControlPort() int {
+	_, port := ControlFromState(LoadState())
+	return port
+}
+
+func ControlRootPass(st State) string {
+	if p := Str(Obj(st, "control"), "root_password"); p != "" {
+		return p
+	}
+	return controlConfRootPass()
+}
+
+// ControlSSHFromState returns the optional encrypted control port settings.
+func ControlSSHFromState(st State) (enabled bool, port int, user, mode string) {
+	ctrl := Obj(st, "control")
+	enabled = Bool(ctrl, "ssh_enabled", false)
+	port = Int(ctrl, "ssh_port", 0)
+	if port < 1024 || port > 65535 {
+		port = DefaultSSHPort
+	}
+	user = StrDef(ctrl, "ssh_user", DefaultSSHUser)
+	mode = StrDef(ctrl, "ssh_mode", "unactive")
+	if mode != "sshtunnel" && mode != "unactive" {
+		mode = "unactive"
+	}
+	if !enabled {
+		mode = "unactive"
+	}
+	return enabled, port, user, mode
+}
+
+func ControlSSHPaths() (hostKey, clientKey, knownHosts, conf, authorizedDir, managedUser string) {
+	return controlHostKey, controlTUIKey, controlKnownHosts, controlSSHDConf, controlSSHHomeRoot, controlManagedUser
+}
+
+var sshUserRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+var reservedSSHUsers = map[string]bool{
+	"root": true, "daemon": true, "bin": true, "sys": true, "sync": true,
+	"games": true, "man": true, "lp": true, "mail": true, "news": true,
+	"uucp": true, "proxy": true, "www-data": true, "backup": true,
+	"list": true, "irc": true, "_apt": true, "nobody": true, "sshd": true,
+	"debian-tor": true, "debian-onionmail": true, "messagebus": true,
+	"systemd-network": true, "systemd-timesync": true,
+}
+
+func sshUserExists(name string) bool {
+	_, err := user.Lookup(name)
+	return err == nil
+}
+
+func runSSHCmd(name string, args ...string) error {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return err
+	}
+	out, err := exec.Command(path, args...).CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return fmt.Errorf("%s: %v: %s", name, err, msg)
+		}
+		return fmt.Errorf("%s: %v", name, err)
+	}
+	return nil
+}
+
+func sshPasswordHash(pass string) (string, error) {
+	path, err := exec.LookPath("openssl")
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command(path, "passwd", "-6", "-stdin")
+	cmd.Stdin = strings.NewReader(pass + "\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("openssl passwd: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	hash := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(hash, "$") {
+		return "", fmt.Errorf("openssl passwd: unexpected output")
+	}
+	return hash, nil
+}
+
+func ensureSSHKey(path, comment string) error {
+	if pathExists(path) {
+		return nil
+	}
+	if err := runSSHCmd("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", path); err != nil {
+		return err
+	}
+	_ = os.Chmod(path, 0o600)
+	return nil
+}
+
+// EnsureControlSSH creates the dedicated SSH account, host/client keys and
+// sshd configuration.  It is called from ApplyState (which runs as root).
+func EnsureControlSSH(st State) error {
+	ctrl := Obj(st, "control")
+	ctrlPort := Int(ctrl, "port", controlConfPort())
+	if ctrlPort < 1024 || ctrlPort > 65535 {
+		ctrlPort = DefaultControlPort
+	}
+	sshPort := Int(ctrl, "ssh_port", DefaultSSHPort)
+	if sshPort < 1024 || sshPort > 65535 || sshPort == ctrlPort {
+		sshPort = DefaultSSHPort
+	}
+	sshUser := StrDef(ctrl, "ssh_user", DefaultSSHUser)
+	if !sshUserRe.MatchString(sshUser) || reservedSSHUsers[sshUser] {
+		return fmt.Errorf("invalid SSH user %q", sshUser)
+	}
+	if err := os.MkdirAll(ControlSSHDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(controlSSHHomeRoot, 0o755); err != nil {
+		return err
+	}
+	if err := ensureSSHKey(controlHostKey, "onionmail-control-host"); err != nil {
+		return err
+	}
+	if err := ensureSSHKey(controlTUIKey, "onionmail-control-tui"); err != nil {
+		return err
+	}
+	hostPub := strings.TrimSpace(Read(controlHostKey + ".pub"))
+	tuiPub := strings.TrimSpace(Read(controlTUIKey + ".pub"))
+	if hostPub == "" || tuiPub == "" {
+		return fmt.Errorf("SSH public key is missing")
+	}
+
+	home := filepath.Join(controlSSHHomeRoot, sshUser)
+	sshDir := filepath.Join(home, ".ssh")
+	managed := strings.TrimSpace(Read(controlManagedUser))
+	if managed != "" && managed != sshUser {
+		if sshUserRe.MatchString(managed) && !reservedSSHUsers[managed] {
+			_ = runSSHCmd("userdel", managed)
+		}
+		_ = os.RemoveAll(filepath.Join(controlSSHHomeRoot, managed))
+	}
+	if sshUserExists(sshUser) {
+		if managed != sshUser {
+			return fmt.Errorf("user %q already exists", sshUser)
+		}
+	} else {
+		if err := runSSHCmd("useradd", "-M", "-d", home, "-s", "/usr/sbin/nologin", sshUser); err != nil {
+			return err
+		}
+	}
+	if err := os.WriteFile(controlManagedUser, []byte(sshUser+"\n"), 0o600); err != nil {
+		return err
+	}
+	if pass := ControlRootPass(st); pass != "" {
+		hash, err := sshPasswordHash(pass)
+		if err != nil {
+			return err
+		}
+		if err := runSSHCmd("usermod", "-p", hash, sshUser); err != nil {
+			return err
+		}
+	}
+	_ = runSSHCmd("usermod", "-e", "", sshUser)
+
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		return err
+	}
+	authLine := fmt.Sprintf(`no-agent-forwarding,no-X11-forwarding,no-pty,permitopen="127.0.0.1:%d",command="/bin/false" %s`, ctrlPort, tuiPub)
+	if err := os.WriteFile(filepath.Join(sshDir, "authorized_keys"), []byte(authLine+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := runSSHCmd("chown", "-R", sshUser+":"+sshUser, home); err != nil {
+		return err
+	}
+	known := fmt.Sprintf("[127.0.0.1]:%d %s\n", sshPort, hostPub)
+	if err := os.WriteFile(controlKnownHosts, []byte(known), 0o600); err != nil {
+		return err
+	}
+	conf := fmt.Sprintf(`Port %d
+ListenAddress 127.0.0.1
+HostKey %s
+PidFile /run/sshd-control.pid
+AuthorizedKeysFile %s
+PasswordAuthentication yes
+PubkeyAuthentication yes
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AllowUsers %s
+AllowTcpForwarding yes
+GatewayPorts no
+PermitOpen 127.0.0.1:%d
+PermitTTY no
+X11Forwarding no
+AllowAgentForwarding no
+AllowStreamLocalForwarding no
+UsePAM no
+StrictModes yes
+ForceCommand /bin/false
+LogLevel VERBOSE
+`, sshPort, controlHostKey, filepath.Join(controlSSHHomeRoot, sshUser, ".ssh", "authorized_keys"), sshUser, ctrlPort)
+	if err := os.WriteFile(controlSSHDConf, []byte(conf), 0o600); err != nil {
+		return err
+	}
+	return nil
 }
 
 type Server struct {
@@ -427,6 +679,11 @@ func DeriveState() State {
 			"exit_name":         "",
 		},
 		"design": map[string]any{"theme": "light", "logo": logo, "small_logo": DefaultSmallLogo},
+		"control": map[string]any{
+			"enabled":       true,
+			"port":          controlConfPort(),
+			"root_password": controlConfRootPass(),
+		},
 		"tor": map[string]any{
 			"mode":          map[bool]string{true: "external", false: "internal"}[hostTor == "1"],
 			"ip":            tip,
@@ -486,6 +743,38 @@ func NormalizeState(st, base State) State {
 	}
 	design["small_logo"] = small
 	result["design"] = design
+	ctrl, ok := result["control"].(map[string]any)
+	if !ok {
+		ctrl = map[string]any{}
+	}
+	if _, ok := ctrl["enabled"].(bool); !ok {
+		ctrl["enabled"] = true
+	}
+	port := IntVal(ctrl["port"], 0)
+	if port < 1024 || port > 65535 {
+		ctrl["port"] = controlConfPort()
+	}
+	if p, _ := ctrl["root_password"].(string); strings.TrimSpace(p) == "" {
+		ctrl["root_password"] = controlConfRootPass()
+	}
+	if _, ok := ctrl["ssh_enabled"].(bool); !ok {
+		ctrl["ssh_enabled"] = false
+	}
+	if p := IntVal(ctrl["ssh_port"], 0); p < 1024 || p > 65535 {
+		ctrl["ssh_port"] = DefaultSSHPort
+	}
+	if u, _ := ctrl["ssh_user"].(string); !sshUserRe.MatchString(u) {
+		ctrl["ssh_user"] = DefaultSSHUser
+	}
+	mode, _ := ctrl["ssh_mode"].(string)
+	if mode != "sshtunnel" && mode != "unactive" {
+		mode = "unactive"
+	}
+	if !Bool(ctrl, "ssh_enabled", false) {
+		mode = "unactive"
+	}
+	ctrl["ssh_mode"] = mode
+	result["control"] = ctrl
 	return result
 }
 
@@ -497,10 +786,14 @@ func LoadState() State {
 	return base
 }
 
+func replEscape(s string) string {
+	return strings.ReplaceAll(s, "$", "$$")
+}
+
 func SetKeyFlat(text, key, value string) string {
 	pat := regexp.MustCompile(`(?im)^(\s*` + regexp.QuoteMeta(key) + `\s+).*$`)
 	if pat.MatchString(text) {
-		return pat.ReplaceAllString(text, "${1}"+value)
+		return pat.ReplaceAllString(text, "${1}"+replEscape(value))
 	}
 	if text != "" && !strings.HasSuffix(text, "\n") {
 		text += "\n"
@@ -511,7 +804,7 @@ func SetKeyFlat(text, key, value string) string {
 func SetKeyServer(text, key, value string) string {
 	pat := regexp.MustCompile(`(?im)^(\s*` + regexp.QuoteMeta(key) + `\s+).*$`)
 	if pat.MatchString(text) {
-		return pat.ReplaceAllString(text, "${1}"+value)
+		return pat.ReplaceAllString(text, "${1}"+replEscape(value))
 	}
 	lines := strings.Split(text, "\n")
 	idx := -1
@@ -644,6 +937,23 @@ func ApplyState(st State, doMigrate bool) string {
 	pop := Read(POP3Conf)
 	pop = regexp.MustCompile(`(?im)^(\s*AutoDeleteReaded\s+).*$`).ReplaceAllString(pop, "${1}"+onOff(Bool(lim, "autodelete", false), "yes", "no"))
 	_ = WriteKeep(POP3Conf, pop, nil)
+	ctrl := Obj(st, "control")
+	ctrlPort := Int(ctrl, "port", controlConfPort())
+	if ctrlPort < 1024 || ctrlPort > 65535 {
+		ctrlPort = DefaultControlPort
+	}
+	ctrlConf := Read(ControlConf)
+	ctrlConf = SetKeyFlat(ctrlConf, "ControlIP", ControlUpstreamIP)
+	ctrlConf = SetKeyFlat(ctrlConf, "ControlPort", strconv.Itoa(ctrlPort))
+	if rootPass := Str(ctrl, "root_password"); rootPass != "" {
+		ctrlConf = SetKeyFlat(ctrlConf, "RootPass", rootPass)
+	}
+	_ = WriteKeep(ControlConf, ctrlConf, nil)
+	if Bool(ctrl, "ssh_enabled", false) {
+		if err := EnsureControlSSH(st); err != nil {
+			_ = os.WriteFile("/var/log/onionmail/ssh-setup.log", []byte(err.Error()+"\n"), 0o640)
+		}
+	}
 	cden := filepath.Join(WWWRoot, "config.denied.conf")
 	if pathExists(cden) {
 		c := Read(cden)
@@ -943,7 +1253,23 @@ func GetOnion(st State) string {
 
 func ControlCommand(cmd string, timeout time.Duration) (string, error) {
 	st := LoadState()
-	return ControlAs(StrDef(st, "nick", "onionmail"), Read(ServicePass), 9010, cmd, timeout)
+	_, port := ControlFromState(st)
+	return ControlAs(StrDef(st, "nick", "onionmail"), Read(ServicePass), port, cmd, timeout)
+}
+
+func DialControl(port int, timeout time.Duration) (net.Conn, error) {
+	var lastErr error
+	for _, ip := range []string{ControlUpstreamIP, ControlLocalIP} {
+		c, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), timeout)
+		if err == nil {
+			return c, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("control port unreachable")
+	}
+	return nil, lastErr
 }
 
 func ControlAs(nick, pass string, port int, cmd string, timeout time.Duration) (string, error) {
@@ -953,7 +1279,7 @@ func ControlAs(nick, pass string, port int, cmd string, timeout time.Duration) (
 	if strings.ContainsAny(cmd, "\r\n\x00") {
 		return "", fmt.Errorf("invalid control command")
 	}
-	c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), timeout)
+	c, err := DialControl(port, timeout)
 	if err != nil {
 		return "", err
 	}
@@ -1067,6 +1393,46 @@ func Validate(st State) []string {
 			errs = append(errs, "tor port: 1..65535")
 		}
 	}
+	ctrl := Obj(st, "control")
+	ctrlPort := Int(ctrl, "port", DefaultControlPort)
+	if ctrlPort < 1024 || ctrlPort > 65535 {
+		errs = append(errs, "control port: 1024..65535")
+	}
+	switch ctrlPort {
+	case 9050, 18000, 18001, 19050, 20025, 20110:
+		errs = append(errs, "control port: conflicts with a service port")
+	}
+	if p := Str(ctrl, "root_password"); p != "" && !regexp.MustCompile(`^[!-~]{8,128}$`).MatchString(p) {
+		errs = append(errs, "root password: 8-128 printable chars, no spaces")
+	}
+	sshPort := Int(ctrl, "ssh_port", DefaultSSHPort)
+	if sshPort < 1024 || sshPort > 65535 {
+		errs = append(errs, "encrypted control port: 1024..65535")
+	} else if sshPort == ctrlPort {
+		errs = append(errs, "encrypted control port: must differ from the control port")
+	} else {
+		switch sshPort {
+		case 9050, 18000, 18001, 19050, 20025, 20110:
+			errs = append(errs, "encrypted control port: conflicts with a service port")
+		}
+	}
+	sshUser := StrDef(ctrl, "ssh_user", DefaultSSHUser)
+	if !sshUserRe.MatchString(sshUser) {
+		errs = append(errs, "SSH user: 1-32 chars, lowercase a-z, digits, _ or -")
+	} else if reservedSSHUsers[sshUser] {
+		errs = append(errs, "SSH user: reserved system account")
+	} else if Bool(ctrl, "ssh_enabled", false) {
+		if managed := strings.TrimSpace(Read(controlManagedUser)); managed != sshUser && sshUserExists(sshUser) {
+			errs = append(errs, "SSH user: account already exists")
+		}
+	}
+	sshMode := StrDef(ctrl, "ssh_mode", "unactive")
+	if sshMode != "sshtunnel" && sshMode != "unactive" {
+		errs = append(errs, "encrypted telnet: invalid mode")
+	}
+	if sshMode == "sshtunnel" && !Bool(ctrl, "ssh_enabled", false) {
+		errs = append(errs, "encrypted telnet: enable the encrypted control port first")
+	}
 	logo := Str(Obj(st, "design"), "logo")
 	if logo == "" || regexp.MustCompile(`\s`).MatchString(logo) {
 		errs = append(errs, "logo: invalid path")
@@ -1133,6 +1499,11 @@ func Save(st State, section string) (bool, []string) {
 		return false, errs
 	}
 	ApplyState(st, false)
+	if Bool(Obj(st, "control"), "ssh_enabled", false) {
+		if err := EnsureControlSSH(st); err != nil {
+			return false, []string{"encrypted control port: " + err.Error()}
+		}
+	}
 	if section == "tor" {
 		if Str(Obj(st, "tor"), "mode") == "internal" {
 			if !StartTor(st) {
@@ -1171,8 +1542,17 @@ func BootEnv() {
 	if mode == "external" {
 		useHost = "1"
 	}
+	ctrlEnabled, ctrlPort := ControlFromState(st)
+	sshEnabled, sshPort, sshUser, sshMode := ControlSSHFromState(st)
 	vals := [][2]string{
 		{"NICK", StrDef(st, "nick", "onionmail")},
+		{"CONTROL_ENABLED", map[bool]string{true: "1", false: "0"}[ctrlEnabled]},
+		{"CONTROL_PORT", strconv.Itoa(ctrlPort)},
+		{"CONTROL_UPSTREAM_IP", ControlUpstreamIP},
+		{"CONTROL_SSH_ENABLED", map[bool]string{true: "1", false: "0"}[sshEnabled]},
+		{"CONTROL_SSH_PORT", strconv.Itoa(sshPort)},
+		{"CONTROL_SSH_USER", sshUser},
+		{"CONTROL_SSH_MODE", sshMode},
 		{"DISPLAY_NAME", StrDef(st, "server_name", "example")},
 		{"ONION", Str(st, "onion")},
 		{"LOCALE", StrDef(st, "locale", "C.UTF-8")},

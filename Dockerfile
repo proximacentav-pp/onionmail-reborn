@@ -15,7 +15,7 @@ ENV LANG=C.UTF-8
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates gnupg wget curl openssl iproute2 \
+      ca-certificates gnupg wget curl openssl iproute2 openssh-server \
       tor obfs4proxy default-jre cpulimit wipe libcap2-bin dnsutils \
       net-tools procps util-linux tini \
  && rm -rf /var/lib/apt/lists/*

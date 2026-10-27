@@ -8,6 +8,10 @@ POP3_PORT=20110
 WEB_PORT=18000
 HTTP_BACKEND_PORT=18001
 CTRL_PORT=9010
+CTRL_IP=127.0.0.2
+SSH_CTRL_ENABLED=0
+SSH_CTRL_PORT=9011
+SSH_CTRL_USER=om
 USE_HOST_TOR="${USE_HOST_TOR:-0}"
 TOR_IP="${TOR_IP:-}"
 TOR_PORT="${TOR_PORT:-9050}"
@@ -46,6 +50,14 @@ mkdir -p /var/log/onionmail
 if [ -f /etc/onionmail/om.json ] && [ -x /usr/local/bin/om ]; then
   eval "$(/usr/local/bin/om __boot-env 2>/dev/null || true)"
 fi
+if [ -z "${CONTROL_PORT:-}" ]; then
+  CONTROL_PORT="$(awk 'tolower($1)=="controlport"{print $2; exit}' /etc/onionmail/control.conf 2>/dev/null || true)"
+fi
+CTRL_PORT="${CONTROL_PORT:-${CTRL_PORT}}"
+CTRL_IP="${CONTROL_UPSTREAM_IP:-${CTRL_IP}}"
+SSH_CTRL_ENABLED="${CONTROL_SSH_ENABLED:-${SSH_CTRL_ENABLED}}"
+SSH_CTRL_PORT="${CONTROL_SSH_PORT:-${SSH_CTRL_PORT}}"
+SSH_CTRL_USER="${CONTROL_SSH_USER:-${SSH_CTRL_USER}}"
 if [ -z "${TOR_MODE:-}" ]; then
   if [ "$USE_HOST_TOR" = "1" ]; then TOR_MODE=external; else TOR_MODE=internal; fi
 fi
@@ -134,6 +146,9 @@ else
 fi
 
 sed -i "s/^TorIP.*/TorIP ${TOR_IP:-127.0.0.1}/; s/^TorPort.*/TorPort ${TOR_PORT:-1}/" /etc/onionmail/core.conf
+# The upstream control service must listen on a private loopback address;
+# the front owns 127.0.0.1:<port> and can be disabled there.
+sed -i "s|^ControlIP.*|ControlIP\t127.0.0.2|" /etc/onionmail/control.conf
 log "onion address: ${ONION}"
 
 if [ ! -f "${MAILDIR}/server.bin" ]; then
@@ -254,13 +269,27 @@ mkdir -p /var/lib/onionmail/webmail/sent
 chown -R debian-onionmail:debian-onionmail /var/lib/onionmail/webmail
 chmod 700 /var/lib/onionmail/webmail /var/lib/onionmail/webmail/sent
 
+if [ "$SSH_CTRL_ENABLED" = "1" ]; then
+  if [ -f /etc/onionmail/ssh/sshd.conf ] && [ -x /usr/sbin/sshd ]; then
+    mkdir -p /run/sshd
+    if /usr/sbin/sshd -t -f /etc/onionmail/ssh/sshd.conf 2>/tmp/sshd-control-check; then
+      /usr/sbin/sshd -f /etc/onionmail/ssh/sshd.conf -E /var/log/onionmail/sshd-control.log
+      log "encrypted control port on 127.0.0.1:${SSH_CTRL_PORT} (${SSH_CTRL_USER}@127.0.0.1)"
+    else
+      log "ERROR: encrypted control port config is invalid: $(cat /tmp/sshd-control-check 2>/dev/null)"
+    fi
+  else
+    log "ERROR: encrypted control port is enabled but sshd/config is missing"
+  fi
+fi
+
 log "starting OnionMail server"
 su debian-onionmail -c "/bin/onionmail -M:server" &
 OM_PID=$!
 
-log "waiting for the control port"
+log "waiting for the control port on ${CTRL_IP}:${CTRL_PORT}"
 for _ in $(seq 1 60); do
-  if timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/${CTRL_PORT}" 2>/dev/null; then break; fi
+  if timeout 2 bash -c "exec 3<>/dev/tcp/${CTRL_IP}/${CTRL_PORT}" 2>/dev/null; then break; fi
   sleep 2
 done
 

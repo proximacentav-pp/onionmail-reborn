@@ -15,7 +15,7 @@ import (
 	"onionmail/internal/omtui"
 )
 
-const omVersion = "beta 0.3"
+const omVersion = "beta 0.4"
 
 func main() {
 	cmd := "help"
@@ -41,6 +41,14 @@ func main() {
 		fmt.Println("  check    validate configuration")
 		fmt.Println("  ap       admin panel:")
 		fmt.Println("           om ap disable|enable|hide|show|passwd|data")
+		fmt.Println("  controlport  local control port:")
+		fmt.Println("           om controlport rootpass --set PASS")
+		fmt.Println("           om controlport port --set PORT | --show")
+		fmt.Println("           om controlport enable|disable|status")
+		fmt.Println("           om controlport ssh enable|disable")
+		fmt.Println("           om controlport ssh-port --set PORT | --show")
+		fmt.Println("           om controlport ssh-user --set USER | --show")
+		fmt.Println("           om controlport ssh-mode sshtunnel|unactive")
 		fmt.Println("  voucher  manage vouchers:")
 		fmt.Println("           om voucher --gen --days N")
 		fmt.Println("           om voucher --rm CODE")
@@ -66,6 +74,8 @@ func main() {
 		fmt.Println("OK")
 	case "ap":
 		os.Exit(apCmd(os.Args[2:]))
+	case "controlport":
+		os.Exit(controlportCmd(os.Args[2:]))
 	case "voucher":
 		os.Exit(voucherCmd(os.Args[2:]))
 	case "setup", "":

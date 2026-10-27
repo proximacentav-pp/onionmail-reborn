@@ -40,6 +40,8 @@ type UI struct {
 	cats   []string
 	rows   int
 	cols   int
+
+	revealCtrl bool
 }
 
 func Run(st omcore.State, b *olang.Bundle) int {
@@ -48,7 +50,7 @@ func Run(st omcore.State, b *olang.Bundle) int {
 		lang = "en"
 	}
 	u := &UI{st: st, lang: lang, b: b, msgOK: true,
-		cats: []string{"1. Main", "2. Admin access", "3. Limits", "4. Server friends", "5. Registration", "6. Tor", "7. Design"}}
+		cats: []string{"1. Main", "2. Admin access", "3. Limits", "4. Server friends", "5. Registration", "6. Tor", "7. Design", "8. ControlPort"}}
 	if !u.setupTerm() {
 		fmt.Fprintln(os.Stderr, "om setup: cannot configure the terminal")
 		return 1
@@ -81,20 +83,32 @@ func Run(st omcore.State, b *olang.Bundle) int {
 		case "left":
 			u.cat = (u.cat - 1 + len(u.cats)) % len(u.cats)
 			u.sel, u.scroll = 0, 0
+			u.revealCtrl = false
 		case "right":
 			u.cat = (u.cat + 1) % len(u.cats)
 			u.sel, u.scroll = 0, 0
+			u.revealCtrl = false
 		case "up":
 			if u.sel > 0 {
 				u.sel--
+				u.revealCtrl = false
 			}
 		case "down":
 			if n := len(u.items()); u.sel < n-1 {
 				u.sel++
+				u.revealCtrl = false
 			}
 		case "tab":
 			if n := len(u.items()); n > 0 {
 				u.sel = (u.sel + 1) % n
+				u.revealCtrl = false
+			}
+		case "text:s", "text:S":
+			if u.cat == 7 {
+				items := u.items()
+				if len(items) > 0 && u.sel < len(items) && items[u.sel].key == "control_root_password" {
+					u.revealCtrl = !u.revealCtrl
+				}
 			}
 		case "enter":
 			items := u.items()
@@ -165,10 +179,14 @@ func (u *UI) readByte() byte {
 func (u *UI) readKey() string {
 	b := u.readByte()
 	switch b {
+	case 1:
+		return "ctrl-a"
 	case 3:
 		return "ctrl-c"
 	case 19:
 		return "ctrl-s"
+	case 29:
+		return "ctrl-]"
 	case 9:
 		return "tab"
 	case 10, 13:
@@ -311,7 +329,7 @@ func (u *UI) draw() {
 	}
 	narrow := u.cols < 120
 	if narrow {
-		groups := [][]int{{0, 1, 2}, {3, 4, 5}, {6}}
+		groups := [][]int{{0, 1, 2}, {3, 4, 5}, {6, 7}}
 		for row, group := range groups {
 			x := 2
 			for _, i := range group {
@@ -345,7 +363,14 @@ func (u *UI) draw() {
 		u.itemsArea(3, left+1, u.rows-5, false)
 	}
 	fh := u.rows - 1
-	u.paint(fh, 1, ansiAcc+pad("  ↑↓/Tab  Enter  Ctrl+S "+u.t("Save")+"  Ctrl+C "+u.t("Cancel"), u.cols))
+	footer := "  ↑↓/Tab  Enter  Ctrl+S " + u.t("Save") + "  Ctrl+C " + u.t("Cancel")
+	if u.cat == 7 {
+		items := u.items()
+		if len(items) > 0 && u.sel < len(items) && items[u.sel].key == "control_root_password" {
+			footer += "  S " + u.t("show/hide")
+		}
+	}
+	u.paint(fh, 1, ansiAcc+pad(footer, u.cols))
 	if u.msg != "" {
 		if u.msgOK {
 			u.paint(u.rows, 2, ansiOK+trunc(u.msg, u.cols-2))
@@ -432,6 +457,23 @@ func (u *UI) items() []item {
 			{"Install small logo", "action", "add_small_logo"},
 			{"Save", "action", "save"},
 		}
+	case 7:
+		_, _, _, sshMode := omcore.ControlSSHFromState(st)
+		out := []item{
+			{"ControlPort", "bool", "control_enabled"},
+			{"Encrypted ControlPort", "bool", "control_ssh_enabled"},
+			{"Control port", "int", "control_port"},
+			{"Root password", "pass", "control_root_password"},
+			{"Login (NICK)", "text", "control_login"},
+			{"Encrypted telnet", "choice", "control_ssh_mode"},
+		}
+		if sshMode == "sshtunnel" {
+			out = append(out,
+				item{"Encrypted port", "int", "control_ssh_port"},
+				item{"SSH user", "text", "control_ssh_user"},
+			)
+		}
+		return append(out, item{"Connect (telnet)", "action", "control_connect"}, item{"Save", "action", "save"})
 	}
 	tor := omcore.Obj(st, "tor")
 	out := []item{{"Tor mode", "choice", "tor_mode"}}
@@ -484,6 +526,29 @@ func (u *UI) valueFor(it item) string {
 		return strings.Repeat("*", min(20, len(omcore.Str(st, key))))
 	case "relay", "admin_enabled", "admin_captcha":
 		return u.onOff(omcore.Bool(st, key, false))
+	case "control_enabled":
+		return u.onOff(omcore.Bool(omcore.Obj(st, "control"), "enabled", true))
+	case "control_ssh_enabled":
+		return u.onOff(omcore.Bool(omcore.Obj(st, "control"), "ssh_enabled", false))
+	case "control_ssh_mode":
+		return omcore.StrDef(omcore.Obj(st, "control"), "ssh_mode", "unactive")
+	case "control_port":
+		return fmt.Sprint(omcore.Int(omcore.Obj(st, "control"), "port", omcore.DefaultControlPort))
+	case "control_ssh_port":
+		return fmt.Sprint(omcore.Int(omcore.Obj(st, "control"), "ssh_port", omcore.DefaultSSHPort))
+	case "control_ssh_user":
+		return omcore.StrDef(omcore.Obj(st, "control"), "ssh_user", omcore.DefaultSSHUser)
+	case "control_login":
+		return omcore.Str(st, "nick")
+	case "control_root_password":
+		v := omcore.Str(omcore.Obj(st, "control"), "root_password")
+		if u.revealCtrl {
+			if v == "" {
+				return "-"
+			}
+			return v
+		}
+		return strings.Repeat("*", min(20, len(v)))
 	}
 	if strings.HasPrefix(key, "reg_") {
 		return u.onOff(omcore.Bool(omcore.Obj(st, "registration"), key[4:], false))
@@ -951,6 +1016,27 @@ func (u *UI) setValue(it item, val string) {
 	st := u.st
 	key := it.key
 	switch key {
+	case "control_login":
+		st["nick"] = strings.ToLower(strings.TrimSpace(val))
+		return
+	case "control_port":
+		if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
+			omcore.Obj(st, "control")["port"] = n
+		}
+		return
+	case "control_ssh_port":
+		if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
+			omcore.Obj(st, "control")["ssh_port"] = n
+		}
+		return
+	case "control_ssh_user":
+		omcore.Obj(st, "control")["ssh_user"] = strings.ToLower(strings.TrimSpace(val))
+		return
+	case "control_root_password":
+		omcore.Obj(st, "control")["root_password"] = val
+		return
+	}
+	switch key {
 	case "server_name", "onion", "nick", "locale", "admin_password":
 		st[key] = val
 		return
@@ -999,6 +1085,20 @@ func (u *UI) setValue(it item, val string) {
 func (u *UI) toggleBool(it item) {
 	st := u.st
 	key := it.key
+	if key == "control_enabled" {
+		ctrl := omcore.Obj(st, "control")
+		ctrl["enabled"] = !omcore.Bool(ctrl, "enabled", true)
+		return
+	}
+	if key == "control_ssh_enabled" {
+		ctrl := omcore.Obj(st, "control")
+		v := !omcore.Bool(ctrl, "ssh_enabled", false)
+		ctrl["ssh_enabled"] = v
+		if !v {
+			ctrl["ssh_mode"] = "unactive"
+		}
+		return
+	}
 	if _, ok := st[key]; ok {
 		st[key] = !omcore.Bool(st, key, false)
 		return
@@ -1099,6 +1199,8 @@ func (u *UI) handle(it item) {
 			}
 		case "vouchers":
 			u.voucherScreen()
+		case "control_connect":
+			u.controlPortScreen()
 		case "tor_log":
 			u.logScreen()
 		case "tor_restart":
@@ -1151,14 +1253,32 @@ func (u *UI) handle(it item) {
 			if r >= 0 {
 				omcore.Obj(u.st, "design")["theme"] = modes[r]
 			}
+		case "control_ssh_mode":
+			modes := []string{"sshtunnel", "unactive"}
+			cur := 1
+			if omcore.StrDef(omcore.Obj(u.st, "control"), "ssh_mode", "unactive") == "sshtunnel" {
+				cur = 0
+			}
+			r := u.choose("Encrypted telnet", []string{"sshtunnel", "unactive"}, cur)
+			if r >= 0 {
+				ctrl := omcore.Obj(u.st, "control")
+				ctrl["ssh_mode"] = modes[r]
+				if modes[r] == "sshtunnel" {
+					ctrl["ssh_enabled"] = true
+				}
+				u.sel = 0
+			}
 		}
 	case "text", "pass", "int":
 		cur := u.valueFor(it)
-		if it.key == "admin_password" {
+		if it.key == "admin_password" || it.key == "control_root_password" {
 			cur = ""
 		}
 		v := u.edit(it.label, cur, it.kind == "pass")
 		if v != nil {
+			if it.key == "control_root_password" && strings.TrimSpace(*v) == "" {
+				return
+			}
 			u.setValue(it, *v)
 			u.msg = ""
 		}

@@ -1,7 +1,7 @@
 # OnionMail Reborn
 
 Docker-сборка OnionMail 1.12 с улучшенными веб-интерфейсом, админ-панелью,
-многоязычным интерфейсом. Версия CLI: `beta 0.3`.
+многоязычным интерфейсом. Версия CLI: `beta 0.4`.
 С лицензией GPL-3.0| см. `LICENSE` и `NOTICE`.
 
 ## Возможности
@@ -20,6 +20,17 @@ Docker-сборка OnionMail 1.12 с улучшенными веб-интерф
   внутри контейнера. `Reset logo` возвращает стандартный логотип OnionMail.
   Файл с хоста можно заранее скопировать:
   `docker cp logo.png onionmail:/tmp/logo.png`.
+- ПортКонтроля (`om setup` → `8. ControlPort`): включение/выключение,
+  порт (по умолчанию 9010), пароль root (S — показать/скрыть), логин (NICK)
+  и встроенный telnet-клиент (`Ctrl+A` — помощь, `Ctrl+]` — выход).
+- Шифрованный ПортКонтроля (SSH): отдельное вкл/выкл, порт 9011 и
+  пользователь `om`; SSH слушает только `127.0.0.1`. В режиме
+  `Encrypted telnet: sshtunnel` встроенный клиент сам поднимает SSH-туннель,
+  в режиме `unactive` работает обычный telnet. Пароль SSH — root-пароль
+  ПортКонтроля. После изменения в TUI перезапустите контейнер; команды
+  `om controlport ...` перезапускают его сами. Ручное подключение:
+  `ssh -p 9011 -N -L 19010:127.0.0.1:9010 om@127.0.0.1`, затем
+  `telnet 127.0.0.1 19010`.
 - команды: om  setup    interactive purple TUI
   om status   show current state
   version  show om and OnionMail versions
@@ -27,6 +38,14 @@ Docker-сборка OnionMail 1.12 с улучшенными веб-интерф
   om check    validate configuration
   om ap       admin panel:
            om ap disable|enable|hide|show|passwd|data
+  om controlport  local control port:
+           om controlport rootpass --set PASS
+           om controlport port --set PORT | --show
+           om controlport enable|disable|status
+           om controlport ssh enable|disable
+           om controlport ssh-port --set PORT | --show
+           om controlport ssh-user --set USER | --show
+           om controlport ssh-mode sshtunnel|unactive
   om voucher  manage vouchers:
            om voucher --gen --days N
            om voucher --rm CODE

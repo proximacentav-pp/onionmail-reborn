@@ -1133,20 +1133,11 @@ func (s *Server) controlStat(timeout time.Duration) map[string]any {
 			break
 		}
 	}
-	port := 9010
-	for _, line := range strings.Split(omcore.Read(s.ControlConf), "\n") {
-		p := strings.Fields(line)
-		if len(p) >= 2 && strings.EqualFold(p[0], "controlport") {
-			if n, err := strconv.Atoi(p[1]); err == nil {
-				port = n
-			}
-			break
-		}
-	}
+	port := omcore.ControlPort()
 	if pass == "" {
 		return map[string]any{}
 	}
-	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), timeout)
+	c, err := omcore.DialControl(port, timeout)
 	if err != nil {
 		return map[string]any{}
 	}

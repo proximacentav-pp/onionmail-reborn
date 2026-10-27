@@ -77,6 +77,118 @@
       "en": "7. Design",
       "es": "7. Diseño"
     },
+    "8. ControlPort": {
+      "ru": "8. ПортКонтроля",
+      "de": "8. ControlPort",
+      "fr": "8. ControlPort",
+      "en": "8. ControlPort",
+      "es": "8. ControlPort"
+    },
+    "ControlPort": {
+      "ru": "ПортКонтроля",
+      "de": "ControlPort",
+      "fr": "ControlPort",
+      "en": "ControlPort",
+      "es": "ControlPort"
+    },
+    "Control port": {
+      "ru": "Порт контроля",
+      "de": "Kontrollport",
+      "fr": "Port de contrôle",
+      "en": "Control port",
+      "es": "Puerto de control"
+    },
+    "Root password": {
+      "ru": "Пароль root",
+      "de": "Root-Passwort",
+      "fr": "Mot de passe root",
+      "en": "Root password",
+      "es": "Contraseña root"
+    },
+    "Login (NICK)": {
+      "ru": "Логин (NICK)",
+      "de": "Login (NICK)",
+      "fr": "Identifiant (NICK)",
+      "en": "Login (NICK)",
+      "es": "Inicio de sesión (NICK)"
+    },
+    "Connect (telnet)": {
+      "ru": "Подключиться (telnet)",
+      "de": "Verbinden (Telnet)",
+      "fr": "Se connecter (telnet)",
+      "en": "Connect (telnet)",
+      "es": "Conectar (telnet)"
+    },
+    "show/hide": {
+      "ru": "показать/скрыть",
+      "de": "anzeigen/verbergen",
+      "fr": "afficher/masquer",
+      "en": "show/hide",
+      "es": "mostrar/ocultar"
+    },
+    "ControlPort help": {
+      "ru": "Помощь ПортКонтроля",
+      "de": "ControlPort-Hilfe",
+      "fr": "Aide ControlPort",
+      "en": "ControlPort help",
+      "es": "Ayuda de ControlPort"
+    },
+    "ControlPort is disabled. Enable it and restart.": {
+      "ru": "ПортКонтроля отключён. Включите его и перезапустите.",
+      "de": "ControlPort ist deaktiviert. Aktivieren und neu starten.",
+      "fr": "ControlPort est désactivé. Activez-le et redémarrez.",
+      "en": "ControlPort is disabled. Enable it and restart.",
+      "es": "ControlPort está desactivado. Actívelo y reinicie."
+    },
+    "ControlPort connection error": {
+      "ru": "Ошибка подключения к ПортКонтроля",
+      "de": "ControlPort-Verbindungsfehler",
+      "fr": "Erreur de connexion ControlPort",
+      "en": "ControlPort connection error",
+      "es": "Error de conexión con ControlPort"
+    },
+    "Encrypted ControlPort": {
+      "ru": "Шиф. ПортКонтроля",
+      "de": "Verschlüsselter ControlPort",
+      "fr": "ControlPort chiffré",
+      "en": "Encrypted ControlPort",
+      "es": "ControlPort cifrado"
+    },
+    "Encrypted ControlPort is disabled. Enable it and restart.": {
+      "ru": "Шиф. ПортКонтроля отключён. Включите его и перезапустите.",
+      "de": "Verschlüsselter ControlPort ist deaktiviert. Aktivieren und neu starten.",
+      "fr": "ControlPort chiffré est désactivé. Activez-le et redémarrez.",
+      "en": "Encrypted ControlPort is disabled. Enable it and restart.",
+      "es": "ControlPort cifrado está desactivado. Actívelo y reinicie."
+    },
+    "Encrypted telnet": {
+      "ru": "Шифр. соед. telnet",
+      "de": "Verschlüsselte Telnet-Verbindung",
+      "fr": "Connexion telnet chiffrée",
+      "en": "Encrypted telnet",
+      "es": "Conexión telnet cifrada"
+    },
+    "Encrypted port": {
+      "ru": "Шиф. порт",
+      "de": "Verschlüsselter Port",
+      "fr": "Port chiffré",
+      "en": "Encrypted port",
+      "es": "Puerto cifrado"
+    },
+    "SSH user": {
+      "ru": "Пользователь SSH",
+      "de": "SSH-Benutzer",
+      "fr": "Utilisateur SSH",
+      "en": "SSH user",
+      "es": "Usuario SSH"
+    },
+    "SSH tunnel error": {
+      "ru": "Ошибка SSH-туннеля",
+      "de": "SSH-Tunnel-Fehler",
+      "fr": "Erreur du tunnel SSH",
+      "en": "SSH tunnel error",
+      "es": "Error del túnel SSH"
+    },
     "Default theme": {
       "ru": "Тема по умолчанию",
       "de": "Standarddesign",

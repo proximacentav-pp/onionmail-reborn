@@ -26,16 +26,7 @@ func control(cmd string) (string, error) {
 	if pass == "" {
 		return "", fmt.Errorf("cannot read the service password from the server config")
 	}
-	port := 9010
-	for _, line := range strings.Split(omcore.Read("/etc/onionmail/control.conf"), "\n") {
-		p := strings.Fields(line)
-		if len(p) >= 2 && strings.EqualFold(p[0], "controlport") {
-			if n, err := strconv.Atoi(p[1]); err == nil {
-				port = n
-			}
-			break
-		}
-	}
+	port := omcore.ControlPort()
 	return omcore.ControlAs(nick, pass, port, cmd, 15_000_000_000)
 }
 
