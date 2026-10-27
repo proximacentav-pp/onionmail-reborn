@@ -114,22 +114,25 @@ func controlHelpLines() []string {
 		"      -L <ctrl-port>:127.0.0.1:<ctrl-port>",
 		"  SSH password = root password",
 		"  (encrypted port listens on 127.0.0.1 only)",
+		"",
+		"Encrypted telnet auth:",
+		"  password - same as plain telnet",
+		"  key      - add a public key in section 8",
+		"  built-in client uses the internal key",
 	}
 }
 
-func (u *UI) controlPortScreen() {
-	ctrl := omcore.Obj(u.st, "control")
+func (u *UI) controlPortScreen(encrypted bool) {
 	enabled, port := omcore.ControlFromState(u.st)
 	if !enabled {
 		u.setMsg(u.t("ControlPort is disabled. Enable it and restart."), false)
 		return
 	}
-	rawMode := omcore.StrDef(ctrl, "ssh_mode", "unactive")
 	sshEnabled, sshPort, sshUser, _ := omcore.ControlSSHFromState(u.st)
 	var conn net.Conn
 	var cleanup func()
 	var label string
-	if rawMode == "sshtunnel" {
+	if encrypted {
 		if !sshEnabled {
 			u.setMsg(u.t("Encrypted ControlPort is disabled. Enable it and restart."), false)
 			return

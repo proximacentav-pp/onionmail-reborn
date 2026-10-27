@@ -914,6 +914,118 @@
       "fr": "Chemin du petit logo",
       "en": "Small logo path",
       "es": "Ruta del logotipo pequeño"
+    },
+    "Auth type": {
+      "ru": "Тип авторизации",
+      "de": "Authentifizierungstyp",
+      "fr": "Type d'authentification",
+      "en": "Auth type",
+      "es": "Tipo de autenticación"
+    },
+    "Password": {
+      "ru": "Пароль",
+      "de": "Passwort",
+      "fr": "Mot de passe",
+      "en": "Password",
+      "es": "Contraseña"
+    },
+    "Key": {
+      "ru": "Ключ",
+      "de": "Schlüssel",
+      "fr": "Clé",
+      "en": "Key",
+      "es": "Clave"
+    },
+    "Key algorithm": {
+      "ru": "Алгоритм шифрования",
+      "de": "Schlüsselalgorithmus",
+      "fr": "Algorithme de clé",
+      "en": "Key algorithm",
+      "es": "Algoritmo de clave"
+    },
+    "Current key": {
+      "ru": "Текущий ключ",
+      "de": "Aktueller Schlüssel",
+      "fr": "Clé actuelle",
+      "en": "Current key",
+      "es": "Clave actual"
+    },
+    "Add public key": {
+      "ru": "Добавить пуб. ключ",
+      "de": "Öffentlichen Schlüssel hinzufügen",
+      "fr": "Ajouter une clé publique",
+      "en": "Add public key",
+      "es": "Añadir clave pública"
+    },
+    "Remove key": {
+      "ru": "Удалить ключ",
+      "de": "Schlüssel entfernen",
+      "fr": "Supprimer la clé",
+      "en": "Remove key",
+      "es": "Eliminar clave"
+    },
+    "Public key": {
+      "ru": "Публичный ключ",
+      "de": "Öffentlicher Schlüssel",
+      "fr": "Clé publique",
+      "en": "Public key",
+      "es": "Clave pública"
+    },
+    "none": {
+      "ru": "нет",
+      "de": "keiner",
+      "fr": "aucune",
+      "en": "none",
+      "es": "ninguna"
+    },
+    "Connect via encrypted telnet": {
+      "ru": "Подключиться по telnet шиф.",
+      "de": "Über verschlüsseltes Telnet verbinden",
+      "fr": "Se connecter en telnet chiffré",
+      "en": "Connect via encrypted telnet",
+      "es": "Conectar por telnet cifrado"
+    },
+    "Connect via unencrypted telnet": {
+      "ru": "Подключиться по telnet нешиф.",
+      "de": "Über unverschlüsseltes Telnet verbinden",
+      "fr": "Se connecter en telnet non chiffré",
+      "en": "Connect via unencrypted telnet",
+      "es": "Conectar por telnet sin cifrar"
+    },
+    "Public key added.": {
+      "ru": "Публичный ключ добавлен.",
+      "de": "Öffentlicher Schlüssel hinzugefügt.",
+      "fr": "Clé publique ajoutée.",
+      "en": "Public key added.",
+      "es": "Clave pública añadida."
+    },
+    "Public key removed.": {
+      "ru": "Публичный ключ удалён.",
+      "de": "Öffentlicher Schlüssel entfernt.",
+      "fr": "Clé publique supprimée.",
+      "en": "Public key removed.",
+      "es": "Clave pública eliminada."
+    },
+    "Remove the public key?": {
+      "ru": "Удалить публичный ключ?",
+      "de": "Öffentlichen Schlüssel entfernen?",
+      "fr": "Supprimer la clé publique ?",
+      "en": "Remove the public key?",
+      "es": "¿Eliminar la clave pública?"
+    },
+    "Add a public key for key authentication.": {
+      "ru": "Добавьте публичный ключ для авторизации по ключу.",
+      "de": "Fügen Sie einen öffentlichen Schlüssel für die Schlüsselauthentifizierung hinzu.",
+      "fr": "Ajoutez une clé publique pour l'authentification par clé.",
+      "en": "Add a public key for key authentication.",
+      "es": "Añada una clave pública para la autenticación por clave."
+    },
+    "OpenSSH does not support this algorithm.": {
+      "ru": "OpenSSH не поддерживает этот алгоритм.",
+      "de": "OpenSSH unterstützt diesen Algorithmus nicht.",
+      "fr": "OpenSSH ne prend pas en charge cet algorithme.",
+      "en": "OpenSSH does not support this algorithm.",
+      "es": "OpenSSH no admite este algoritmo."
     }
   },
   "front": {

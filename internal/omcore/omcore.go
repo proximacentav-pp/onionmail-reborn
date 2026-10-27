@@ -46,14 +46,40 @@ const (
 	// 127.0.0.1 only and allows forwarding solely to the control port.
 	DefaultSSHPort     = 9011
 	DefaultSSHUser     = "om"
+	DefaultSSHAuth     = "password"
+	DefaultSSHAlgo     = "ed25519"
 	ControlSSHDir      = "/etc/onionmail/ssh"
 	controlHostKey     = ControlSSHDir + "/control_host_ed25519_key"
 	controlTUIKey      = ControlSSHDir + "/tui_ed25519"
+	controlClientKey   = ControlSSHDir + "/client_authorized_key.pub"
 	controlKnownHosts  = ControlSSHDir + "/tui_known_hosts"
 	controlSSHDConf    = ControlSSHDir + "/sshd.conf"
 	controlSSHHomeRoot = "/var/lib/onionmail/ssh-home"
 	controlManagedUser = ControlSSHDir + "/managed_user"
 )
+
+type SSHAlgorithm struct {
+	ID        string
+	Label     string
+	Kind      string
+	Bits      int
+	Supported bool
+}
+
+// ControlSSHAlgorithms lists the key types offered for encrypted telnet.
+// OpenSSH only supports ed25519, RSA and NIST P-256/P-384/P-521 keys.
+var ControlSSHAlgorithms = []SSHAlgorithm{
+	{ID: "ed25519", Label: "ed25519", Kind: "ed25519", Supported: true},
+	{ID: "rsa3072", Label: "RSA3072", Kind: "rsa", Bits: 3072, Supported: true},
+	{ID: "rsa2048", Label: "RSA2048", Kind: "rsa", Bits: 2048, Supported: true},
+	{ID: "rsa4096", Label: "RSA4096", Kind: "rsa", Bits: 4096, Supported: true},
+	{ID: "ecdsa-secp256k1", Label: "ECDSA-secp256k1", Kind: "ecdsa", Bits: 256},
+	{ID: "ecdsa-p256", Label: "ECDSA-P256", Kind: "ecdsa", Bits: 256, Supported: true},
+	{ID: "ecdsa-p521", Label: "ECDSA-P521", Kind: "ecdsa", Bits: 521, Supported: true},
+	{ID: "ecdsa-p384", Label: "ECDSA-P384", Kind: "ecdsa", Bits: 384, Supported: true},
+	{ID: "ecdsa-p192", Label: "ECDSA-P192", Kind: "ecdsa", Bits: 192},
+	{ID: "ecdsa-curve224", Label: "ECDSA-Curve224", Kind: "ecdsa", Bits: 224},
+}
 
 var DefaultLangs = []string{"ru", "de", "fr", "en", "es"}
 
@@ -241,6 +267,158 @@ func ControlSSHPaths() (hostKey, clientKey, knownHosts, conf, authorizedDir, man
 	return controlHostKey, controlTUIKey, controlKnownHosts, controlSSHDConf, controlSSHHomeRoot, controlManagedUser
 }
 
+func ControlSSHAuthFromState(st State) (auth, algo string) {
+	ctrl := Obj(st, "control")
+	auth = StrDef(ctrl, "ssh_auth", DefaultSSHAuth)
+	if auth != "password" && auth != "key" {
+		auth = DefaultSSHAuth
+	}
+	algo = StrDef(ctrl, "ssh_algo", DefaultSSHAlgo)
+	if _, ok := SSHAlgoByID(algo); !ok {
+		algo = DefaultSSHAlgo
+	}
+	return auth, algo
+}
+
+func SSHAlgoByID(id string) (SSHAlgorithm, bool) {
+	for _, a := range ControlSSHAlgorithms {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return SSHAlgorithm{}, false
+}
+
+func SSHAlgoLabel(id string) string {
+	if a, ok := SSHAlgoByID(id); ok {
+		return a.Label
+	}
+	return DefaultSSHAlgo
+}
+
+// ControlSSHClientKeyInfo returns the fingerprint of the optional client
+// public key installed for encrypted telnet.
+func ControlSSHClientKeyInfo() (string, bool) {
+	if strings.TrimSpace(Read(controlClientKey)) == "" {
+		return "", false
+	}
+	out, err := exec.Command("ssh-keygen", "-l", "-f", controlClientKey).CombinedOutput()
+	if err != nil {
+		return "invalid", true
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 2 {
+		return "invalid", true
+	}
+	return fields[1], true
+}
+
+// ControlSSHAddClientKey installs one public key for encrypted telnet logins.
+// The key must match the algorithm selected in the state.
+func ControlSSHAddClientKey(st State, pub string) error {
+	pub = strings.TrimSpace(pub)
+	if pub == "" {
+		return fmt.Errorf("public key is empty")
+	}
+	if strings.ContainsAny(pub, "\r\n") {
+		return fmt.Errorf("public key must be a single line")
+	}
+	auth, algoID := ControlSSHAuthFromState(st)
+	if auth != "key" {
+		return fmt.Errorf("set encrypted telnet auth to key first")
+	}
+	algo, ok := SSHAlgoByID(algoID)
+	if !ok {
+		return fmt.Errorf("unknown key algorithm %q", algoID)
+	}
+	if !algo.Supported {
+		return fmt.Errorf("OpenSSH does not support %s", algo.Label)
+	}
+	if err := validateSSHClientKey(pub, algo); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(ControlSSHDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(controlClientKey, []byte(pub+"\n"), 0o600); err != nil {
+		return err
+	}
+	if Bool(Obj(st, "control"), "ssh_enabled", false) {
+		if err := EnsureControlSSH(st); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ControlSSHRemoveClientKey(st State) error {
+	if err := os.Remove(controlClientKey); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if Bool(Obj(st, "control"), "ssh_enabled", false) {
+		return EnsureControlSSH(st)
+	}
+	return nil
+}
+
+func validateSSHClientKey(pub string, algo SSHAlgorithm) error {
+	switch algo.Kind {
+	case "ed25519":
+		if !strings.HasPrefix(pub, "ssh-ed25519 ") {
+			return fmt.Errorf("%s public key required", algo.Label)
+		}
+	case "rsa":
+		if !strings.HasPrefix(pub, "ssh-rsa ") {
+			return fmt.Errorf("%s public key required", algo.Label)
+		}
+	case "ecdsa":
+		if !strings.HasPrefix(pub, fmt.Sprintf("ecdsa-sha2-nistp%d ", algo.Bits)) {
+			return fmt.Errorf("%s public key required", algo.Label)
+		}
+	default:
+		return fmt.Errorf("unsupported key algorithm")
+	}
+	f, err := os.CreateTemp("", "om-sshkey-*.pub")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	defer os.Remove(name)
+	if _, err := f.WriteString(pub + "\n"); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	out, err := exec.Command("ssh-keygen", "-l", "-f", name).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("invalid public key: %s", strings.TrimSpace(string(out)))
+	}
+	re := regexp.MustCompile(`^\s*(\d+)\s+\S+\s+.*\(([A-Za-z0-9-]+)\)\s*$`)
+	m := re.FindStringSubmatch(strings.TrimSpace(string(out)))
+	if m == nil {
+		return fmt.Errorf("invalid public key")
+	}
+	bits, _ := strconv.Atoi(m[1])
+	kind := strings.ToUpper(m[2])
+	switch algo.Kind {
+	case "ed25519":
+		if kind != "ED25519" {
+			return fmt.Errorf("%s public key required", algo.Label)
+		}
+	case "rsa":
+		if kind != "RSA" || bits != algo.Bits {
+			return fmt.Errorf("%s public key required", algo.Label)
+		}
+	case "ecdsa":
+		if kind != "ECDSA" || bits != algo.Bits {
+			return fmt.Errorf("%s public key required", algo.Label)
+		}
+	}
+	return nil
+}
+
 var sshUserRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
 var reservedSSHUsers = map[string]bool{
@@ -357,6 +535,11 @@ func EnsureControlSSH(st State) error {
 	if err := os.WriteFile(controlManagedUser, []byte(sshUser+"\n"), 0o600); err != nil {
 		return err
 	}
+	auth, _ := ControlSSHAuthFromState(st)
+	passwordAuth := "no"
+	if auth == "password" {
+		passwordAuth = "yes"
+	}
 	if pass := ControlRootPass(st); pass != "" {
 		hash, err := sshPasswordHash(pass)
 		if err != nil {
@@ -371,8 +554,17 @@ func EnsureControlSSH(st State) error {
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		return err
 	}
-	authLine := fmt.Sprintf(`no-agent-forwarding,no-X11-forwarding,no-pty,permitopen="127.0.0.1:%d",command="/bin/false" %s`, ctrlPort, tuiPub)
-	if err := os.WriteFile(filepath.Join(sshDir, "authorized_keys"), []byte(authLine+"\n"), 0o600); err != nil {
+	opts := fmt.Sprintf(`no-agent-forwarding,no-X11-forwarding,no-pty,permitopen="127.0.0.1:%d",command="/bin/false"`, ctrlPort)
+	authLines := []string{opts + " " + tuiPub}
+	if auth == "key" {
+		if clientPub := strings.TrimSpace(Read(controlClientKey)); clientPub != "" {
+			if strings.ContainsAny(clientPub, "\r\n") {
+				return fmt.Errorf("invalid client public key")
+			}
+			authLines = append(authLines, opts+" "+clientPub)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "authorized_keys"), []byte(strings.Join(authLines, "\n")+"\n"), 0o600); err != nil {
 		return err
 	}
 	if err := runSSHCmd("chown", "-R", sshUser+":"+sshUser, home); err != nil {
@@ -387,7 +579,7 @@ ListenAddress 127.0.0.1
 HostKey %s
 PidFile /run/sshd-control.pid
 AuthorizedKeysFile %s
-PasswordAuthentication yes
+PasswordAuthentication %s
 PubkeyAuthentication yes
 KbdInteractiveAuthentication no
 PermitRootLogin no
@@ -403,7 +595,7 @@ UsePAM no
 StrictModes yes
 ForceCommand /bin/false
 LogLevel VERBOSE
-`, sshPort, controlHostKey, filepath.Join(controlSSHHomeRoot, sshUser, ".ssh", "authorized_keys"), sshUser, ctrlPort)
+`, sshPort, controlHostKey, filepath.Join(controlSSHHomeRoot, sshUser, ".ssh", "authorized_keys"), passwordAuth, sshUser, ctrlPort)
 	if err := os.WriteFile(controlSSHDConf, []byte(conf), 0o600); err != nil {
 		return err
 	}
@@ -774,6 +966,16 @@ func NormalizeState(st, base State) State {
 		mode = "unactive"
 	}
 	ctrl["ssh_mode"] = mode
+	auth, _ := ctrl["ssh_auth"].(string)
+	if auth != "password" && auth != "key" {
+		auth = DefaultSSHAuth
+	}
+	ctrl["ssh_auth"] = auth
+	algo, _ := ctrl["ssh_algo"].(string)
+	if _, ok := SSHAlgoByID(algo); !ok {
+		algo = DefaultSSHAlgo
+	}
+	ctrl["ssh_algo"] = algo
 	result["control"] = ctrl
 	return result
 }
@@ -1432,6 +1634,14 @@ func Validate(st State) []string {
 	}
 	if sshMode == "sshtunnel" && !Bool(ctrl, "ssh_enabled", false) {
 		errs = append(errs, "encrypted telnet: enable the encrypted control port first")
+	}
+	sshAuth := StrDef(ctrl, "ssh_auth", DefaultSSHAuth)
+	if sshAuth != "password" && sshAuth != "key" {
+		errs = append(errs, "encrypted telnet auth: must be password or key")
+	}
+	sshAlgo := StrDef(ctrl, "ssh_algo", DefaultSSHAlgo)
+	if _, ok := SSHAlgoByID(sshAlgo); !ok {
+		errs = append(errs, "encrypted telnet algorithm: invalid")
 	}
 	logo := Str(Obj(st, "design"), "logo")
 	if logo == "" || regexp.MustCompile(`\s`).MatchString(logo) {

@@ -458,7 +458,8 @@ func (u *UI) items() []item {
 			{"Save", "action", "save"},
 		}
 	case 7:
-		_, _, _, sshMode := omcore.ControlSSHFromState(st)
+		sshEnabled, _, _, _ := omcore.ControlSSHFromState(st)
+		sshAuth, _ := omcore.ControlSSHAuthFromState(st)
 		out := []item{
 			{"ControlPort", "bool", "control_enabled"},
 			{"Encrypted ControlPort", "bool", "control_ssh_enabled"},
@@ -466,14 +467,27 @@ func (u *UI) items() []item {
 			{"Root password", "pass", "control_root_password"},
 			{"Login (NICK)", "text", "control_login"},
 			{"Encrypted telnet", "choice", "control_ssh_mode"},
+			{"Auth type", "choice", "control_ssh_auth"},
 		}
-		if sshMode == "sshtunnel" {
+		if sshAuth == "key" {
+			out = append(out,
+				item{"Key algorithm", "choice", "control_ssh_algo"},
+				item{"Current key", "info", "control_ssh_key_info"},
+				item{"Add public key", "action", "control_ssh_add_key"},
+				item{"Remove key", "action", "control_ssh_remove_key"},
+			)
+		}
+		if sshEnabled {
 			out = append(out,
 				item{"Encrypted port", "int", "control_ssh_port"},
 				item{"SSH user", "text", "control_ssh_user"},
 			)
 		}
-		return append(out, item{"Connect (telnet)", "action", "control_connect"}, item{"Save", "action", "save"})
+		return append(out,
+			item{"Connect via encrypted telnet", "action", "control_connect_enc"},
+			item{"Connect via unencrypted telnet", "action", "control_connect_plain"},
+			item{"Save", "action", "save"},
+		)
 	}
 	tor := omcore.Obj(st, "tor")
 	out := []item{{"Tor mode", "choice", "tor_mode"}}
@@ -502,6 +516,12 @@ func (u *UI) valueFor(it item) string {
 		}
 		return u.t("Custom") + ": " + baseName(logo)
 	case "info":
+		if it.key == "control_ssh_key_info" {
+			if fp, ok := omcore.ControlSSHClientKeyInfo(); ok {
+				return fp
+			}
+			return u.t("none")
+		}
 		tor := omcore.Obj(st, "tor")
 		switch omcore.Str(tor, "mode") {
 		case "internal":
@@ -532,6 +552,15 @@ func (u *UI) valueFor(it item) string {
 		return u.onOff(omcore.Bool(omcore.Obj(st, "control"), "ssh_enabled", false))
 	case "control_ssh_mode":
 		return omcore.StrDef(omcore.Obj(st, "control"), "ssh_mode", "unactive")
+	case "control_ssh_auth":
+		auth, _ := omcore.ControlSSHAuthFromState(st)
+		if auth == "key" {
+			return u.t("Key")
+		}
+		return u.t("Password")
+	case "control_ssh_algo":
+		_, algo := omcore.ControlSSHAuthFromState(st)
+		return omcore.SSHAlgoLabel(algo)
 	case "control_port":
 		return fmt.Sprint(omcore.Int(omcore.Obj(st, "control"), "port", omcore.DefaultControlPort))
 	case "control_ssh_port":
@@ -1199,8 +1228,35 @@ func (u *UI) handle(it item) {
 			}
 		case "vouchers":
 			u.voucherScreen()
-		case "control_connect":
-			u.controlPortScreen()
+		case "control_connect_enc":
+			u.controlPortScreen(true)
+		case "control_connect_plain":
+			u.controlPortScreen(false)
+		case "control_ssh_add_key":
+			v := u.edit(u.t("Public key"), "", false)
+			if v != nil && strings.TrimSpace(*v) != "" {
+				if err := omcore.ControlSSHAddClientKey(u.st, *v); err != nil {
+					u.setMsg(err.Error(), false)
+				} else {
+					if ok, errs := omcore.Save(u.st, ""); ok {
+						u.setMsg(u.t("Public key added."), true)
+					} else {
+						u.setMsg(u.t("Validation error")+": "+strings.Join(first(errs, 3), "; "), false)
+					}
+				}
+			}
+		case "control_ssh_remove_key":
+			if u.confirm(u.t("Remove the public key?")) {
+				if err := omcore.ControlSSHRemoveClientKey(u.st); err != nil {
+					u.setMsg(err.Error(), false)
+				} else {
+					if ok, errs := omcore.Save(u.st, ""); ok {
+						u.setMsg(u.t("Public key removed."), true)
+					} else {
+						u.setMsg(u.t("Validation error")+": "+strings.Join(first(errs, 3), "; "), false)
+					}
+				}
+			}
 		case "tor_log":
 			u.logScreen()
 		case "tor_restart":
@@ -1265,6 +1321,42 @@ func (u *UI) handle(it item) {
 				ctrl["ssh_mode"] = modes[r]
 				if modes[r] == "sshtunnel" {
 					ctrl["ssh_enabled"] = true
+				}
+				u.sel = 0
+			}
+		case "control_ssh_auth":
+			modes := []string{"password", "key"}
+			cur := 0
+			if auth, _ := omcore.ControlSSHAuthFromState(u.st); auth == "key" {
+				cur = 1
+			}
+			r := u.choose("Auth type", []string{"Password", "Key"}, cur)
+			if r >= 0 {
+				omcore.Obj(u.st, "control")["ssh_auth"] = modes[r]
+				if modes[r] == "key" {
+					if _, ok := omcore.ControlSSHClientKeyInfo(); !ok {
+						u.setMsg(u.t("Add a public key for key authentication."), false)
+					}
+				}
+				u.sel = 0
+			}
+		case "control_ssh_algo":
+			_, curAlgo := omcore.ControlSSHAuthFromState(u.st)
+			ids := make([]string, 0, len(omcore.ControlSSHAlgorithms))
+			labels := make([]string, 0, len(omcore.ControlSSHAlgorithms))
+			cur := 0
+			for i, a := range omcore.ControlSSHAlgorithms {
+				ids = append(ids, a.ID)
+				labels = append(labels, a.Label)
+				if a.ID == curAlgo {
+					cur = i
+				}
+			}
+			r := u.choose("Key algorithm", labels, cur)
+			if r >= 0 {
+				omcore.Obj(u.st, "control")["ssh_algo"] = ids[r]
+				if algo, ok := omcore.SSHAlgoByID(ids[r]); ok && !algo.Supported {
+					u.setMsg(u.t("OpenSSH does not support this algorithm."), false)
 				}
 				u.sel = 0
 			}

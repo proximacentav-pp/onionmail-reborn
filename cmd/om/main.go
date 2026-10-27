@@ -15,7 +15,7 @@ import (
 	"onionmail/internal/omtui"
 )
 
-const omVersion = "beta 0.4"
+const omVersion = "beta 0.5"
 
 func main() {
 	cmd := "help"
