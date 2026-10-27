@@ -46,6 +46,12 @@ Docker-сборка OnionMail 1.12 с улучшенными веб-интерф
   `telnet 127.0.0.1 19010`. Из CLI: `om controlport connect` (обычный
   telnet-клиент) и `om controlport connect-enc` (через SSH-туннель).
   В обоих клиентах `Ctrl+A` — справка, `Ctrl+]` — выход.
+- Локальный режим без onion: `om skip-tor` отключает публикацию onion
+  и пропускает ожидание ControlPort/HTTP при старте; для core поднимается
+  локальный SOCKS Tor, поэтому сервер работает только на localhost.
+  `om skip-tor off` возвращает прежний режим Tor, `om skip-tor status`
+  показывает состояние. Команда сохраняет настройку и перезапускает
+  контейнер (нужен `restart: unless-stopped`).
 - В форме регистрации `/register.html` есть чекбокс
   `Запрет на вход через веб почту (/web)`. Если он отмечен, front
   отклоняет вход этой учётной записи в `/web` (POP3/SMTP продолжают
@@ -70,6 +76,8 @@ Docker-сборка OnionMail 1.12 с улучшенными веб-интерф
            om controlport ssh-key --show | --set PUBKEY | --rm
            om controlport connect [--encrypted]
            om controlport connect-enc
+  om skip-tor  disable onion and startup waits (localhost only):
+           om skip-tor [on|off|status]
   om voucher  manage vouchers:
            om voucher --gen --days N
            om voucher --rm CODE

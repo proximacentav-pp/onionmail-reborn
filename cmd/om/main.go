@@ -33,7 +33,7 @@ func main() {
 	}
 	switch cmd {
 	case "-h", "--help", "help":
-		fmt.Println("Usage: om [setup|status|version|check|ap]")
+		fmt.Println("Usage: om [setup|status|version|check|ap|skip-tor]")
 		fmt.Println("  setup    interactive purple TUI")
 		fmt.Println("  status   show current state")
 		fmt.Println("  version  show om and OnionMail versions")
@@ -50,6 +50,8 @@ func main() {
 		fmt.Println("           om controlport ssh-user --set USER | --show")
 		fmt.Println("           om controlport ssh-mode sshtunnel|unactive")
 		fmt.Println("           om controlport connect [--encrypted]")
+		fmt.Println("  skip-tor  disable onion and startup waits (localhost only):")
+		fmt.Println("           om skip-tor [on|off|status]")
 		fmt.Println("  voucher  manage vouchers:")
 		fmt.Println("           om voucher --gen --days N")
 		fmt.Println("           om voucher --rm CODE")
@@ -77,6 +79,8 @@ func main() {
 		os.Exit(apCmd(os.Args[2:]))
 	case "controlport":
 		os.Exit(controlportCmd(os.Args[2:]))
+	case "skip-tor":
+		os.Exit(skipTorCmd(os.Args[2:]))
 	case "voucher":
 		os.Exit(voucherCmd(os.Args[2:]))
 	case "setup", "":

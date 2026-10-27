@@ -58,6 +58,7 @@ CTRL_IP="${CONTROL_UPSTREAM_IP:-${CTRL_IP}}"
 SSH_CTRL_ENABLED="${CONTROL_SSH_ENABLED:-${SSH_CTRL_ENABLED}}"
 SSH_CTRL_PORT="${CONTROL_SSH_PORT:-${SSH_CTRL_PORT}}"
 SSH_CTRL_USER="${CONTROL_SSH_USER:-${SSH_CTRL_USER}}"
+SKIP_TOR="${SKIP_TOR:-0}"
 if [ -z "${TOR_MODE:-}" ]; then
   if [ "$USE_HOST_TOR" = "1" ]; then TOR_MODE=external; else TOR_MODE=internal; fi
 fi
@@ -90,7 +91,8 @@ if [ "$TOR_MODE" = "external" ]; then
       sleep 2
     done
     if ! timeout 3 bash -c "exec 3<>/dev/tcp/${TOR_IP}/${TOR_PORT}" 2>/dev/null; then
-      log "WARNING: host tor SOCKS is still unreachable; continuing anyway"
+      log "FATAL: host tor SOCKS is not reachable on ${TOR_IP}:${TOR_PORT}"
+      exit 1
     fi
   fi
   log "using host tor SOCKS at ${TOR_IP}:${TOR_PORT}"
@@ -103,9 +105,10 @@ elif [ "$TOR_MODE" = "internal" ]; then
   if [ -f /etc/onionmail/om.json ] && [ -x /usr/local/bin/om ]; then
     /usr/local/bin/om __torrc
   else
+    TOR_PORT=19050
     cat > /etc/tor/torrc <<EOF
 User debian-tor
-SocksPort 127.0.0.1:19050
+SocksPort 127.0.0.1:${TOR_PORT}
 DataDirectory /var/lib/tor
 Log notice file ${TOR_LOG}
 HiddenServiceDir ${HS_DIR}
@@ -140,16 +143,68 @@ EOF
   fi
   ONION="$(cat "${HS_DIR}/hostname")"
   TOR_IP="127.0.0.1"
+
+  log "waiting for tor SOCKS ${TOR_IP}:${TOR_PORT}"
+  tor_up=0
+  for _ in $(seq 1 90); do
+    if timeout 2 bash -c "exec 3<>/dev/tcp/${TOR_IP}/${TOR_PORT}" 2>/dev/null; then
+      tor_up=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$tor_up" != "1" ]; then
+    log "FATAL: tor SOCKS is not reachable on ${TOR_IP}:${TOR_PORT}"
+    exit 1
+  fi
 else
-  log "tor mode: disabled"
-  ONION="${ONION:-}"
+  log "tor mode: disabled (skip-tor: localhost only)"
+  SKIP_TOR=1
+  ONION="${ONION:-${ONION_ADDRESS:-}}"
+  TOR_MODE=local
+  TOR_IP=127.0.0.1
+  TOR_PORT=19050
+
+  mkdir -p /var/lib/tor /run/tor
+  chown -R debian-tor:debian-tor /var/lib/tor /run/tor 2>/dev/null || true
+  chmod 700 /var/lib/tor
+  cat > /etc/tor/torrc <<EOF
+User debian-tor
+SocksPort 127.0.0.1:${TOR_PORT}
+DataDirectory /var/lib/tor
+Log notice file ${TOR_LOG}
+EOF
+  chgrp debian-tor /var/log/onionmail 2>/dev/null || true
+  chmod 750 /var/log/onionmail 2>/dev/null || true
+  touch "$TOR_LOG"
+  chown debian-tor:debian-tor "$TOR_LOG" 2>/dev/null || true
+  chmod 640 "$TOR_LOG"
+
+  log "starting local tor SOCKS on ${TOR_IP}:${TOR_PORT} (no onion)"
+  service tor start >/dev/null 2>&1 || su -s /bin/sh debian-tor -c "tor -f /etc/tor/torrc" >/dev/null 2>&1 &
+  local_tor_up=0
+  for _ in $(seq 1 30); do
+    if timeout 1 bash -c "exec 3<>/dev/tcp/${TOR_IP}/${TOR_PORT}" 2>/dev/null; then
+      local_tor_up=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$local_tor_up" != "1" ]; then
+    log "FATAL: local tor SOCKS ${TOR_IP}:${TOR_PORT} did not open in time"
+    exit 1
+  fi
 fi
 
 sed -i "s/^TorIP.*/TorIP ${TOR_IP:-127.0.0.1}/; s/^TorPort.*/TorPort ${TOR_PORT:-1}/" /etc/onionmail/core.conf
 # The upstream control service must listen on a private loopback address;
 # the front owns 127.0.0.1:<port> and can be disabled there.
 sed -i "s|^ControlIP.*|ControlIP\t127.0.0.2|" /etc/onionmail/control.conf
-log "onion address: ${ONION}"
+if [ "$SKIP_TOR" = "1" ]; then
+  log "onion address: disabled (Tor skipped)"
+else
+  log "onion address: ${ONION}"
+fi
 
 if [ ! -f "${MAILDIR}/server.bin" ]; then
   log "first start: generating the OnionMail server (this can take a while)"
@@ -287,27 +342,63 @@ log "starting OnionMail server"
 su debian-onionmail -c "/bin/onionmail -M:server" &
 OM_PID=$!
 
-log "waiting for the control port on ${CTRL_IP}:${CTRL_PORT}"
-for _ in $(seq 1 60); do
-  if timeout 2 bash -c "exec 3<>/dev/tcp/${CTRL_IP}/${CTRL_PORT}" 2>/dev/null; then break; fi
-  sleep 2
-done
+if [ "$SKIP_TOR" = "1" ]; then
+  log "skip-tor: not waiting for the control port on ${CTRL_IP}:${CTRL_PORT}"
+  if ! kill -0 "$OM_PID" 2>/dev/null; then
+    log "FATAL: OnionMail exited during startup; see /var/log/onionmail/start.log"
+    exit 1
+  fi
+else
+  log "waiting for the control port on ${CTRL_IP}:${CTRL_PORT}"
+  control_up=0
+  for _ in $(seq 1 90); do
+    if ! kill -0 "$OM_PID" 2>/dev/null; then
+      log "FATAL: OnionMail exited during startup; see /var/log/onionmail/start.log"
+      exit 1
+    fi
+    if timeout 2 bash -c "exec 3<>/dev/tcp/${CTRL_IP}/${CTRL_PORT}" 2>/dev/null; then
+      control_up=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$control_up" != "1" ]; then
+    log "FATAL: control port ${CTRL_IP}:${CTRL_PORT} did not open in time"
+    exit 1
+  fi
 
-# TLS certificate SHA-1, shown to new users so they can pin it.
-FP=""
-for _ in $(seq 1 30); do
-  FP="$(timeout 10 openssl s_client -starttls smtp -connect 127.0.0.1:${SMTP_PORT} </dev/null 2>/dev/null \
-        | openssl x509 -noout -fingerprint -sha1 2>/dev/null | cut -d= -f2 || true)"
-  [ -n "$FP" ] && break
-  sleep 2
-done
-[ -n "$FP" ] && printf '%s\n' "$FP" > /var/lib/onionmail/cert.sha1
+  # TLS certificate SHA-1, shown to new users so they can pin it.
+  FP=""
+  for _ in $(seq 1 30); do
+    FP="$(timeout 10 openssl s_client -starttls smtp -connect 127.0.0.1:${SMTP_PORT} </dev/null 2>/dev/null \
+          | openssl x509 -noout -fingerprint -sha1 2>/dev/null | cut -d= -f2 || true)"
+    [ -n "$FP" ] && break
+    sleep 1
+  done
+  [ -n "$FP" ] && printf '%s\n' "$FP" > /var/lib/onionmail/cert.sha1
+fi
 
-log "waiting for the built-in HTTP server on 127.0.0.1:${HTTP_BACKEND_PORT}"
-for _ in $(seq 1 60); do
-  if timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/${HTTP_BACKEND_PORT}" 2>/dev/null; then break; fi
-  sleep 2
-done
+if [ "$SKIP_TOR" = "1" ]; then
+  log "skip-tor: not waiting for the built-in HTTP server on 127.0.0.1:${HTTP_BACKEND_PORT}"
+else
+  log "waiting for the built-in HTTP server on 127.0.0.1:${HTTP_BACKEND_PORT}"
+  http_up=0
+  for _ in $(seq 1 90); do
+    if ! kill -0 "$OM_PID" 2>/dev/null; then
+      log "FATAL: OnionMail exited during startup; see /var/log/onionmail/start.log"
+      exit 1
+    fi
+    if timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/${HTTP_BACKEND_PORT}" 2>/dev/null; then
+      http_up=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$http_up" != "1" ]; then
+    log "FATAL: built-in HTTP server 127.0.0.1:${HTTP_BACKEND_PORT} did not open in time"
+    exit 1
+  fi
+fi
 
 log "starting the front on 127.0.0.1:${WEB_PORT} (onion port 80)"
 NICK_SH=${NICK//\'/\'\\\'\'}
@@ -324,5 +415,9 @@ cleanup() {
 }
 trap cleanup TERM INT
 
-log "ready: ${ONION}"
+if [ "$SKIP_TOR" = "1" ]; then
+  log "ready: localhost only (Tor skipped)"
+else
+  log "ready: ${ONION}"
+fi
 wait -n "$OM_PID" "$FRONT_PID"
