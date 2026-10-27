@@ -23,6 +23,37 @@ TOR_LOG="/var/log/onionmail/tor.log"
 
 log() { echo "[onionmail] $*"; }
 
+tor_error() {
+  printf 'STDERR: Tor connection error: %s\n' "$*" >&2
+}
+
+start_local_socks() {
+  mkdir -p /var/lib/tor /run/tor
+  chown -R debian-tor:debian-tor /var/lib/tor /run/tor 2>/dev/null || true
+  chmod 700 /var/lib/tor
+  cat > /etc/tor/torrc <<EOF
+User debian-tor
+SocksPort 127.0.0.1:${TOR_PORT}
+DataDirectory /var/lib/tor
+Log notice file ${TOR_LOG}
+EOF
+  chgrp debian-tor /var/log/onionmail 2>/dev/null || true
+  chmod 750 /var/log/onionmail 2>/dev/null || true
+  touch "$TOR_LOG"
+  chown debian-tor:debian-tor "$TOR_LOG" 2>/dev/null || true
+  chmod 640 "$TOR_LOG"
+  service tor start >/dev/null 2>&1 || su -s /bin/sh debian-tor -c "tor -f /etc/tor/torrc" >/dev/null 2>&1 &
+  local_tor_up=0
+  for _ in $(seq 1 30); do
+    if timeout 1 bash -c "exec 3<>/dev/tcp/${TOR_IP}/${TOR_PORT}" 2>/dev/null; then
+      local_tor_up=1
+      break
+    fi
+    sleep 1
+  done
+  [ "$local_tor_up" = "1" ]
+}
+
 escape_sed() {
   local s="$1"
   s=${s//\\/\\\\}
@@ -81,21 +112,22 @@ if [ "$TOR_MODE" = "external" ]; then
     ONION="$(cat "${HS_DIR}/hostname")"
   fi
   if [ -z "$ONION" ]; then
-    log "FATAL: ONION_ADDRESS is empty; set it in .env to the .onion address published by the host tor"
-    exit 1
+    log "WARNING: ONION_ADDRESS is empty; set it in .env to the .onion address published by the host tor"
   fi
   if ! timeout 3 bash -c "exec 3<>/dev/tcp/${TOR_IP}/${TOR_PORT}" 2>/dev/null; then
+    tor_error "host tor SOCKS is not reachable on ${TOR_IP}:${TOR_PORT}"
     log "waiting for host tor SOCKS ${TOR_IP}:${TOR_PORT} (up to 90s)"
     for _ in $(seq 1 45); do
       timeout 3 bash -c "exec 3<>/dev/tcp/${TOR_IP}/${TOR_PORT}" 2>/dev/null && break
       sleep 2
     done
     if ! timeout 3 bash -c "exec 3<>/dev/tcp/${TOR_IP}/${TOR_PORT}" 2>/dev/null; then
-      log "FATAL: host tor SOCKS is not reachable on ${TOR_IP}:${TOR_PORT}"
-      exit 1
+      TOR_LOCAL_FALLBACK=1
     fi
   fi
-  log "using host tor SOCKS at ${TOR_IP}:${TOR_PORT}"
+  if [ "${TOR_LOCAL_FALLBACK:-0}" != "1" ]; then
+    log "using host tor SOCKS at ${TOR_IP}:${TOR_PORT}"
+  fi
 elif [ "$TOR_MODE" = "internal" ]; then
   mkdir -p /var/lib/tor /run/tor
   chown -R debian-tor:debian-tor /var/lib/tor /run/tor 2>/dev/null || true
@@ -138,10 +170,12 @@ EOF
     sleep 2
   done
   if [ ! -s "${HS_DIR}/hostname" ]; then
-    log "FATAL: tor did not publish the hidden service in time"
-    exit 1
+    tor_error "tor did not publish the hidden service in time"
+    SKIP_TOR=1
+    ONION="${ONION:-${ONION_ADDRESS:-}}"
+  else
+    ONION="$(cat "${HS_DIR}/hostname")"
   fi
-  ONION="$(cat "${HS_DIR}/hostname")"
   TOR_IP="127.0.0.1"
 
   log "waiting for tor SOCKS ${TOR_IP}:${TOR_PORT}"
@@ -154,8 +188,8 @@ EOF
     sleep 1
   done
   if [ "$tor_up" != "1" ]; then
-    log "FATAL: tor SOCKS is not reachable on ${TOR_IP}:${TOR_PORT}"
-    exit 1
+    tor_error "tor SOCKS is not reachable on ${TOR_IP}:${TOR_PORT}"
+    TOR_LOCAL_FALLBACK=1
   fi
 else
   log "tor mode: disabled (skip-tor: localhost only)"
@@ -165,34 +199,22 @@ else
   TOR_IP=127.0.0.1
   TOR_PORT=19050
 
-  mkdir -p /var/lib/tor /run/tor
-  chown -R debian-tor:debian-tor /var/lib/tor /run/tor 2>/dev/null || true
-  chmod 700 /var/lib/tor
-  cat > /etc/tor/torrc <<EOF
-User debian-tor
-SocksPort 127.0.0.1:${TOR_PORT}
-DataDirectory /var/lib/tor
-Log notice file ${TOR_LOG}
-EOF
-  chgrp debian-tor /var/log/onionmail 2>/dev/null || true
-  chmod 750 /var/log/onionmail 2>/dev/null || true
-  touch "$TOR_LOG"
-  chown debian-tor:debian-tor "$TOR_LOG" 2>/dev/null || true
-  chmod 640 "$TOR_LOG"
-
   log "starting local tor SOCKS on ${TOR_IP}:${TOR_PORT} (no onion)"
-  service tor start >/dev/null 2>&1 || su -s /bin/sh debian-tor -c "tor -f /etc/tor/torrc" >/dev/null 2>&1 &
-  local_tor_up=0
-  for _ in $(seq 1 30); do
-    if timeout 1 bash -c "exec 3<>/dev/tcp/${TOR_IP}/${TOR_PORT}" 2>/dev/null; then
-      local_tor_up=1
-      break
-    fi
-    sleep 1
-  done
-  if [ "$local_tor_up" != "1" ]; then
-    log "FATAL: local tor SOCKS ${TOR_IP}:${TOR_PORT} did not open in time"
-    exit 1
+  if ! start_local_socks; then
+    tor_error "local tor SOCKS ${TOR_IP}:${TOR_PORT} is not reachable"
+  fi
+fi
+
+if [ "${TOR_LOCAL_FALLBACK:-0}" = "1" ]; then
+  TOR_MODE=local
+  TOR_IP=127.0.0.1
+  TOR_PORT=19050
+  SKIP_TOR=1
+  ONION="${ONION:-${ONION_ADDRESS:-}}"
+  service tor stop >/dev/null 2>&1 || true
+  log "falling back to local SOCKS-only Tor on ${TOR_IP}:${TOR_PORT} (no onion)"
+  if ! start_local_socks; then
+    tor_error "local tor SOCKS ${TOR_IP}:${TOR_PORT} is not reachable"
   fi
 fi
 
@@ -345,8 +367,7 @@ OM_PID=$!
 if [ "$SKIP_TOR" = "1" ]; then
   log "skip-tor: not waiting for the control port on ${CTRL_IP}:${CTRL_PORT}"
   if ! kill -0 "$OM_PID" 2>/dev/null; then
-    log "FATAL: OnionMail exited during startup; see /var/log/onionmail/start.log"
-    exit 1
+    log "WARNING: OnionMail exited during startup; front stays available on localhost"
   fi
 else
   log "waiting for the control port on ${CTRL_IP}:${CTRL_PORT}"
@@ -417,7 +438,8 @@ trap cleanup TERM INT
 
 if [ "$SKIP_TOR" = "1" ]; then
   log "ready: localhost only (Tor skipped)"
+  wait "$FRONT_PID"
 else
   log "ready: ${ONION}"
+  wait -n "$OM_PID" "$FRONT_PID"
 fi
-wait -n "$OM_PID" "$FRONT_PID"
