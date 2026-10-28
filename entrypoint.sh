@@ -28,6 +28,22 @@ tor_error() {
   printf 'STDERR: Tor connection error: %s\n' "$*" >&2
 }
 
+random_onion() {
+  printf '%s.onion' "$(head -c 35 /dev/urandom | base32 | tr -d '=\n' | tr 'A-Z' 'a-z')"
+}
+
+local_onion() {
+  local o="${ONION:-${ONION_ADDRESS:-}}"
+  if [ -z "$o" ] && [ -f "$SERVERS_CONF" ]; then
+    o="$(awk '$1=="Onion"{print $2; exit}' "$SERVERS_CONF" || true)"
+  fi
+  if [ -z "$o" ]; then
+    o="$(random_onion)"
+    log "WARNING: no onion address configured; using local placeholder ${o} (not published)" >&2
+  fi
+  printf '%s' "$o"
+}
+
 start_local_socks() {
   mkdir -p /var/lib/tor /run/tor
   chown -R debian-tor:debian-tor /var/lib/tor /run/tor 2>/dev/null || true
@@ -195,7 +211,7 @@ EOF
 else
   log "tor mode: disabled (skip-tor: localhost only)"
   SKIP_TOR=1
-  ONION="${ONION:-${ONION_ADDRESS:-}}"
+  ONION="$(local_onion)"
   TOR_MODE=local
   TOR_IP=127.0.0.1
   TOR_PORT=19050
@@ -211,7 +227,7 @@ if [ "${TOR_LOCAL_FALLBACK:-0}" = "1" ]; then
   TOR_IP=127.0.0.1
   TOR_PORT=19050
   SKIP_TOR=1
-  ONION="${ONION:-${ONION_ADDRESS:-}}"
+  ONION="$(local_onion)"
   service tor stop >/dev/null 2>&1 || true
   log "falling back to local SOCKS-only Tor on ${TOR_IP}:${TOR_PORT} (no onion)"
   if ! start_local_socks; then

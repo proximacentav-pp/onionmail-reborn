@@ -94,6 +94,8 @@ docker compose -f docker-compose.yml -f docker-compose.bridge.yml up -d
 
 После этого сайт доступен на `http://127.0.0.1:18000/` (webmail — `/web`).
 В bridge-режиме без доступа к Tor контейнер работает локально, без onion.
+Если `ONION_ADDRESS` не задан, при первом запуске создаётся локальный
+placeholder-адрес; наружу он не публикуется.
 
 ## Переменные из .env
 
