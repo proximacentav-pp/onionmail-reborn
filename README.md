@@ -1,8 +1,8 @@
 # OnionMail Reborn
 
 Docker-сборка OnionMail 1.12 с улучшенными веб-интерфейсом, админ-панелью,
-многоязычным интерфейсом. Версия CLI: `beta 0.4`.
-С лицензией GPL-3.0| см. `LICENSE` и `NOTICE`.
+многоязычным интерфейсом. Версия CLI: beta 0.6.
+С лицензией GPL-3.0 (см. `LICENSE` и `NOTICE`).
 
 ## Возможности
 
@@ -23,7 +23,7 @@ Docker-сборка OnionMail 1.12 с улучшенными веб-интерф
 - ПортКонтроля (`om setup` → `8. ControlPort`): включение/выключение,
   , пароль root (S — показать/скрыть), логин (тот же ONIONMAIL_NICK)
   и встроенный telnet-клиент (`Ctrl+A` — помощь, `Ctrl+]` — выход).
-- Шифрованный ПортКонтроля (SSH--тунель): ; SSH слушает только `127.0.0.1`. Кнопка
+- Шифрованный ПортКонтроля (SSH-тунель) ; SSH слушает только `127.0.0.1`. Кнопка
   `Подключиться по telnet шиф.` поднимает SSH-туннель, кнопка
   `Подключиться по telnet нешиф.` открывает обычный telnet
   Пароль SSH — root-пароль ПортКонтроля. После изменения
@@ -45,6 +45,16 @@ Docker-сборка OnionMail 1.12 с улучшенными веб-интерф
 - оригинальные команды из OnionMail сохранены
 
 ## Быстрый старт
+
+```bash
+docker run -d --pull always \
+  -p 127.0.0.1:18000:18000 \
+  -e WEB_BIND=0.0.0.0 \
+  -e TOR_MODE=off \
+  proximityext4/onionmail-reborn:latest
+    # потом внутри контейнера выполнить om setup для первичной настройки
+```
+или:
 
 ```bash
 cp .env.example .env
@@ -83,7 +93,7 @@ docker run -d --name om-test \
   -v om-test-mail:/var/onionmail \
   -v om-test-log:/var/log/onionmail \
   -v om-test-tor:/var/lib/tor \
-  onionmail-local:1.12
+  proximityext4/onionmail-reborn:latest
 ```
 
 Или используйте готовый override:
@@ -92,7 +102,7 @@ docker run -d --name om-test \
 docker compose -f docker-compose.yml -f docker-compose.bridge.yml up -d
 ```
 
-После этого сайт доступен на `http://127.0.0.1:18000/` (webmail — `/web`).
+После этого сайт доступен на `http://127.0.0.1:18000/`.
 В bridge-режиме без доступа к Tor контейнер работает локально, без onion.
 Если `ONION_ADDRESS` не задан, при первом запуске создаётся локальный
 placeholder-адрес; наружу он не публикуется.
@@ -149,7 +159,7 @@ onionmail_*.deb*              пакет OnionMail и контрольная с�
 ## Примечания
 
 Это независимый форк, не связанный с onionmail.info.
-проект находится в бете возможны баги
+Проект находится в стадии бета-тестирования, возможны баги.
 
 ## Скриншоты
 --- главный экран ---
