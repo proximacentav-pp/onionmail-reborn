@@ -613,6 +613,7 @@ def prefs_selector():
 NICK = os.environ.get("ONIONMAIL_NICK", "onionmail")
 DISPLAY_NAME = os.environ.get("ONIONMAIL_DISPLAY_NAME", "example").strip() or "example"
 FRONT_PORT = int(os.environ.get("WEB_PORT", "18000"))
+FRONT_BIND = os.environ.get("WEB_BIND", "127.0.0.1").strip() or "127.0.0.1"
 UPSTREAM = ("127.0.0.1", 18001)
 SMTP_PORT = 20025
 POP3_PORT = 20110
@@ -2697,7 +2698,7 @@ def main():
         sys.stdout.write(f"registry seed failed: {exc}\n")
     sys.stdout.write(f"front ready for {ONION} (webmail /web, upstream {UPSTREAM[0]}:{UPSTREAM[1]})\n")
     sys.stdout.flush()
-    httpd = ThreadingHTTPServer(("127.0.0.1", FRONT_PORT), Handler)
+    httpd = ThreadingHTTPServer((FRONT_BIND, FRONT_PORT), Handler)
     httpd.daemon_threads = True
     try:
         httpd.serve_forever()

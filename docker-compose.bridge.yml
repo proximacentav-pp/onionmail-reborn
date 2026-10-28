@@ -1,0 +1,8 @@
+services:
+  onionmail:
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:18000:18000"
+    environment:
+      WEB_BIND: 0.0.0.0
+      TOR_MODE: "off"

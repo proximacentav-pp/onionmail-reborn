@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,6 +37,7 @@ const (
 type Server struct {
 	Nick         string
 	DisplayName  string
+	Bind         string
 	Port         string
 	Upstream     string
 	SMTPPort     int
@@ -94,6 +96,10 @@ func NewServer() (*Server, error) {
 	if display == "" {
 		display = "example"
 	}
+	bind := strings.TrimSpace(os.Getenv("WEB_BIND"))
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
 	port := os.Getenv("WEB_PORT")
 	if port == "" {
 		port = "18000"
@@ -107,7 +113,7 @@ func NewServer() (*Server, error) {
 		theme = "light"
 	}
 	s := &Server{
-		Nick: nick, DisplayName: display, Port: port, Upstream: "127.0.0.1:18001",
+		Nick: nick, DisplayName: display, Bind: bind, Port: port, Upstream: "127.0.0.1:18001",
 		SMTPPort: 20025, POP3Port: 20110,
 		ServerDir:    "/etc/onionmail/servers.d/1-" + nick + ".conf",
 		ControlConf:  "/etc/onionmail/control.conf",
@@ -182,7 +188,7 @@ func (s *Server) Serve() error {
 			fmt.Fprintf(s.Log, "registry seed failed: %v\n", err)
 		}
 	}()
-	addr := "127.0.0.1:" + s.Port
+	addr := net.JoinHostPort(s.Bind, s.Port)
 	fmt.Fprintf(s.Log, "front ready for %s (webmail /web, upstream %s)\n", s.Onion, s.Upstream)
 	go s.startControlGate()
 	go s.serverStatsLoop()

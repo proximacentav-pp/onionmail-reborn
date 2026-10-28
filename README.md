@@ -68,6 +68,33 @@ sudo ./host_tor_setup.sh
 
 и укажите полученный `.onion` в `ONION_ADDRESS` в `.env`.
 
+### Локальный доступ без Tor (bridge-сеть)
+
+По умолчанию контейнер использует `network_mode: host` и front слушает
+`127.0.0.1:18000`. Если контейнер запущен в обычной bridge-сети, порт нужно
+опубликовать, а front — перевести на `0.0.0.0`:
+
+```bash
+docker run -d --name om-test \
+  -p 127.0.0.1:18000:18000 \
+  -e WEB_BIND=0.0.0.0 -e TOR_MODE=off \
+  -v om-test-etc:/etc/onionmail \
+  -v om-test-lib:/var/lib/onionmail \
+  -v om-test-mail:/var/onionmail \
+  -v om-test-log:/var/log/onionmail \
+  -v om-test-tor:/var/lib/tor \
+  onionmail-local:1.12
+```
+
+Или используйте готовый override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.bridge.yml up -d
+```
+
+После этого сайт доступен на `http://127.0.0.1:18000/` (webmail — `/web`).
+В bridge-режиме без доступа к Tor контейнер работает локально, без onion.
+
 ## Переменные из .env
 
 | Переменная | Назначение |

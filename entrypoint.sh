@@ -6,6 +6,7 @@ DISPLAY_NAME="${ONIONMAIL_DISPLAY_NAME:-example}"
 SMTP_PORT=20025
 POP3_PORT=20110
 WEB_PORT=18000
+WEB_BIND="${WEB_BIND:-127.0.0.1}"
 HTTP_BACKEND_PORT=18001
 CTRL_PORT=9010
 CTRL_IP=127.0.0.2
@@ -423,10 +424,10 @@ else
   fi
 fi
 
-log "starting the front on 127.0.0.1:${WEB_PORT} (onion port 80)"
+log "starting the front on ${WEB_BIND}:${WEB_PORT} (onion port 80)"
 NICK_SH=${NICK//\'/\'\\\'\'}
 DISPLAY_SH=${DISPLAY_NAME//\'/\'\\\'\'}
-su debian-onionmail -c "env ONIONMAIL_NICK='${NICK_SH}' ONIONMAIL_DISPLAY_NAME='${DISPLAY_SH}' ONIONMAIL_THEME='${DEFAULT_THEME}' WEB_PORT='${WEB_PORT}' /usr/local/bin/om-front" &
+su debian-onionmail -c "env ONIONMAIL_NICK='${NICK_SH}' ONIONMAIL_DISPLAY_NAME='${DISPLAY_SH}' ONIONMAIL_THEME='${DEFAULT_THEME}' WEB_BIND='${WEB_BIND}' WEB_PORT='${WEB_PORT}' /usr/local/bin/om-front" &
 FRONT_PID=$!
 
 cleanup() {
