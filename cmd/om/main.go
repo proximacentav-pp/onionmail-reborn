@@ -360,13 +360,15 @@ func voucherCmd(args []string) int {
 			return 1
 		}
 		now := time.Now()
-		vs := omcore.Arr(st, "vouchers")
-		vs = append(vs, map[string]any{
-			"code": code, "created": now.Format("2006-01-02 15:04"),
-			"days": days, "expires": now.AddDate(0, 0, days).Format("2006-01-02"),
-		})
-		st["vouchers"] = vs
-		if err := omcore.StateSave(st); err != nil {
+		if err := omcore.UpdateState(func(cur omcore.State) error {
+			vs := omcore.Arr(cur, "vouchers")
+			vs = append(vs, map[string]any{
+				"code": code, "created": now.Format("2006-01-02 15:04"),
+				"days": days, "expires": now.AddDate(0, 0, days).Format("2006-01-02"),
+			})
+			cur["vouchers"] = vs
+			return nil
+		}); err != nil {
 			fmt.Fprintln(os.Stderr, "om voucher: warning: state not saved: "+err.Error())
 		}
 		fmt.Println(code)
@@ -385,16 +387,18 @@ func voucherCmd(args []string) int {
 			fmt.Fprintln(os.Stderr, "om voucher: "+line)
 			return 1
 		}
-		vs := omcore.Arr(st, "vouchers")
-		keep := make([]any, 0, len(vs))
-		for _, v := range vs {
-			m, _ := v.(map[string]any)
-			if omcore.Str(m, "code") != code {
-				keep = append(keep, v)
+		if err := omcore.UpdateState(func(cur omcore.State) error {
+			vs := omcore.Arr(cur, "vouchers")
+			keep := make([]any, 0, len(vs))
+			for _, v := range vs {
+				m, _ := v.(map[string]any)
+				if omcore.Str(m, "code") != code {
+					keep = append(keep, v)
+				}
 			}
-		}
-		st["vouchers"] = keep
-		if err := omcore.StateSave(st); err != nil {
+			cur["vouchers"] = keep
+			return nil
+		}); err != nil {
 			fmt.Fprintln(os.Stderr, "om voucher: warning: state not saved: "+err.Error())
 		}
 		fmt.Println("Voucher deleted: " + code)

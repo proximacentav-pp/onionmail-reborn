@@ -74,7 +74,7 @@ func (s *Server) collectDashboard(r *http.Request) dashboard {
 		}
 		var recvCount, recvBytes int
 		status := "nopass"
-		pop3 := fmt.Sprint(entry["pop3"])
+		pop3 := s.entryCredential(entry, "pop3")
 		if pop3 != "" && pop3 != "<nil>" {
 			var err error
 			recvCount, recvBytes, err = pop3Stats(login, pop3)
@@ -95,7 +95,7 @@ func (s *Server) collectDashboard(r *http.Request) dashboard {
 		rows = append(rows, adminUser{
 			Login: login, Exit: fmt.Sprint(entry["exit"]), LastLogin: int64(intVal(entry["last_login"])),
 			RecvCount: recvCount, RecvBytes: int64(recvBytes), SentCount: len(sentItems), SentBytes: sentBytes,
-			Status: status, HasPass: pop3 != "" && pop3 != "<nil>",
+			Status: status, HasPass: pop3 != "",
 		})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -171,13 +171,8 @@ func (d dashboard) known() int {
 	return n
 }
 
-func storedSMTP(data registryData, login string) bool {
-	entry := data.Users[login]
-	if entry == nil {
-		return false
-	}
-	v := strings.TrimSpace(fmt.Sprint(entry["smtp"]))
-	return v != "" && v != "<nil>"
+func (s *Server) storedSMTP(data registryData, login string) bool {
+	return strings.TrimSpace(s.entryCredential(data.Users[login], "smtp")) != ""
 }
 
 func countList(value any) int {
@@ -217,7 +212,7 @@ func (s *Server) adminDashboard(ctx *reqCtx, w http.ResponseWriter, r *http.Requ
 				errMsg = ctx.t("Login: 3–16 characters, Latin letters/digits/._-, no @.")
 			} else if exitlogin != "" && !validExitLogin(exitlogin) {
 				errMsg = ctx.t("Exit login: 3–30 characters, Latin letters/digits/._-.")
-			} else if smtp == "" && !storedSMTP(s.loadRegistry(), login) {
+			} else if smtp == "" && !s.storedSMTP(s.loadRegistry(), login) {
 				errMsg = ctx.t("Enter the SMTP password for a new mailbox.")
 			} else if _, _, err := pop3Stats(login, pop3); err != nil {
 				errMsg = ctx.tf("POP3 did not accept login “{login}” with this password.", map[string]string{"login": login})

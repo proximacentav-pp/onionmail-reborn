@@ -1167,10 +1167,10 @@ func (s *Server) registerUser(login, smtp, pop3, exitlogin string, lastLogin int
 		entry = map[string]any{}
 	}
 	if smtp != "" {
-		entry["smtp"] = smtp
+		s.storeCredential(entry, "smtp", smtp)
 	}
 	if pop3 != "" {
-		entry["pop3"] = pop3
+		s.storeCredential(entry, "pop3", pop3)
 	}
 	if exitlogin != "" {
 		entry["exit"] = strings.ToLower(strings.TrimSpace(exitlogin))
@@ -1412,9 +1412,9 @@ func (s *Server) registrySeed() error {
 			if entry == nil {
 				entry = map[string]any{}
 			}
-			if entry["smtp"] == nil || entry["pop3"] == nil || entry["smtp"] == "" || entry["pop3"] == "" {
-				entry["smtp"] = sm[1]
-				entry["pop3"] = po[1]
+			if s.entryCredential(entry, "smtp") == "" || s.entryCredential(entry, "pop3") == "" {
+				s.storeCredential(entry, "smtp", sm[1])
+				s.storeCredential(entry, "pop3", po[1])
 				if _, ok := entry["created"]; !ok {
 					entry["created"] = time.Now().Unix()
 				}

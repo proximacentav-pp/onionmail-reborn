@@ -47,6 +47,7 @@ type Server struct {
 	SentDir      string
 	MailDir      string
 	Registry     string
+	RegistryKey  string
 	ThemeDir     string
 	Onion        string
 	DefaultTheme string
@@ -120,6 +121,7 @@ func NewServer() (*Server, error) {
 		SentDir:      "/var/lib/onionmail/webmail/sent",
 		MailDir:      "/var/onionmail/" + nick,
 		Registry:     "/var/lib/onionmail/webmail/registry.json",
+		RegistryKey:  defaultRegistryKeyPath,
 		ThemeDir:     envOr("ONIONMAIL_THEME_DIR", "/usr/local/share/onionmail/theme"),
 		DefaultTheme: theme, Bundle: b,
 		AdminToken: randomToken(24),
@@ -188,11 +190,28 @@ func (s *Server) Serve() error {
 			fmt.Fprintf(s.Log, "registry seed failed: %v\n", err)
 		}
 	}()
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(s.Log, "registry migration failed: %v\n", r)
+			}
+		}()
+		if err := s.migrateRegistrySecrets(); err != nil {
+			fmt.Fprintf(s.Log, "registry migration failed: %v\n", err)
+		}
+	}()
 	addr := net.JoinHostPort(s.Bind, s.Port)
 	fmt.Fprintf(s.Log, "front ready for %s (webmail /web, upstream %s)\n", s.Onion, s.Upstream)
 	go s.startControlGate()
 	go s.serverStatsLoop()
-	srv := &http.Server{Addr: addr, Handler: s}
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           s,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       300 * time.Second,
+		WriteTimeout:      300 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	return srv.ListenAndServe()
 }
 
@@ -319,6 +338,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			s.proxy(ctx, w, r)
 		}
 	case http.MethodPost:
+		if path != "/logon.html" && path != "/web/login" && !sameOrigin(r) {
+			s.logf("cross-origin POST rejected: %s", path)
+			s.sendHTML(w, r, 403, s.smallPage(ctx, ctx.t("Access denied"), ctx.t("Cross-origin request rejected.")), nil)
+			return
+		}
 		if s.adminHidden() && (path == "/logon.html" || strings.HasPrefix(path, "/admin")) {
 			s.sendHTML(w, r, 404, "<h1>404</h1>", nil)
 			return
@@ -472,6 +496,18 @@ func (s *Server) readBody(r *http.Request, limit int64) []byte {
 	return data
 }
 
+func sameOrigin(r *http.Request) bool {
+	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+		u, err := url.Parse(origin)
+		return err == nil && strings.EqualFold(u.Host, r.Host)
+	}
+	if ref := strings.TrimSpace(r.Header.Get("Referer")); ref != "" {
+		u, err := url.Parse(ref)
+		return err == nil && strings.EqualFold(u.Host, r.Host)
+	}
+	return true
+}
+
 func (s *Server) form(r *http.Request) map[string][]string {
 	raw := s.readBody(r, 300_000)
 	v, err := urlParseQuery(string(raw))
@@ -561,17 +597,9 @@ func (s *Server) omState() map[string]any {
 }
 
 func (s *Server) omStateSave(st map[string]any) {
-	b, err := json.MarshalIndent(st, "", "  ")
-	if err != nil {
-		return
+	if err := omcore.StateSave(omcore.State(st)); err != nil {
+		s.logf("state save failed: %v", err)
 	}
-	b = append(b, '\n')
-	tmp := omcore.StatePath + ".fronttmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return
-	}
-	_ = os.Chmod(tmp, 0o600)
-	_ = os.Rename(tmp, omcore.StatePath)
 }
 
 func (s *Server) controlCommand(cmd string, timeout time.Duration) (string, error) {
@@ -803,16 +831,91 @@ func (s *Server) loginSucceeded(key string) {
 	s.loginMu.Unlock()
 }
 
+func (s *Server) loginFailuresFor(key string) int {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	now := time.Now()
+	n := 0
+	for _, t := range s.loginFailures[key] {
+		if now.Sub(t) < loginWindow {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *Server) loginDelay(key string) time.Duration {
+	n := s.loginFailuresFor(key)
+	if n == 0 {
+		return 0
+	}
+	d := 200 * time.Millisecond
+	for i := 1; i < n && d < 5*time.Second; i++ {
+		d *= 2
+	}
+	if d > 5*time.Second {
+		d = 5 * time.Second
+	}
+	return d
+}
+
+func requestSource(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func loginKeys(user, clientID, source string) (clientKey, accountKey string) {
+	accountKey = "acct:" + user
+	return accountKey + "|" + clientID + "|" + source, accountKey
+}
+
+func (s *Server) clientID(w http.ResponseWriter, r *http.Request) string {
+	const name = "omcid"
+	if c, err := r.Cookie(name); err == nil {
+		v := c.Value
+		if len(v) >= 16 && len(v) <= 64 {
+			ok := true
+			for _, ch := range v {
+				if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_') {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				return v
+			}
+		}
+	}
+	v := randomToken(18)
+	ck := &http.Cookie{
+		Name:     name,
+		Value:    v,
+		Path:     "/",
+		MaxAge:   365 * 24 * 3600,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil,
+	}
+	http.SetCookie(w, ck)
+	return v
+}
+
 func (s *Server) logonProxy(ctx *reqCtx, w http.ResponseWriter, r *http.Request) {
 	body := s.readBody(r, 300_000)
 	fields, _ := parseQuery(string(body))
 	user := strings.ToLower(strings.TrimSpace(firstVal(fields, "om-lo")))
-	key := "logon:" + user
-	if user != "" && s.loginBlocked(key) {
+	clientKey, accountKey := loginKeys(user, s.clientID(w, r), requestSource(r))
+	if user != "" && s.loginBlocked(clientKey) {
 		s.logf("logon rate limited: %q", user)
 		s.sendHTML(w, r, 429, s.smallPage(ctx, ctx.t("Access denied"),
 			ctx.t("Too many sign-in attempts. Try again in a few minutes.")), [][2]string{{"Retry-After", "600"}})
 		return
+	}
+	if user != "" {
+		time.Sleep(s.loginDelay(accountKey))
 	}
 	status, headers, data, err := s.fetchUpstream(r, body, "", http.MethodPost)
 	if err != nil {
@@ -823,9 +926,11 @@ func (s *Server) logonProxy(ctx *reqCtx, w http.ResponseWriter, r *http.Request)
 	if user != "" {
 		failed := status >= 400 || bytes.Contains(data, []byte(`name="om-lo"`)) || bytes.Contains(data, []byte(`id="perrostr"`))
 		if failed {
-			s.loginFailed(key)
+			s.loginFailed(clientKey)
+			s.loginFailed(accountKey)
 		} else if status < 400 {
-			s.loginSucceeded(key)
+			s.loginSucceeded(clientKey)
+			s.loginSucceeded(accountKey)
 		}
 	}
 	s.relay(ctx, w, r, status, headers, data)

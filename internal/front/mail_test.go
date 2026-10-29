@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -52,12 +53,17 @@ func TestRegisterPostStoresWebmailBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	keyPath := filepath.Join(dir, "registry.key")
+	if err := os.WriteFile(keyPath, []byte(strings.Repeat("k", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	s := &Server{
-		Upstream: strings.TrimPrefix(up.URL, "http://"),
-		Registry: filepath.Join(dir, "registry.json"),
-		Client:   up.Client(),
-		Bundle:   b,
-		Log:      io.Discard,
+		Upstream:    strings.TrimPrefix(up.URL, "http://"),
+		Registry:    filepath.Join(dir, "registry.json"),
+		RegistryKey: keyPath,
+		Client:      up.Client(),
+		Bundle:      b,
+		Log:         io.Discard,
 	}
 	ctx := &reqCtx{s: s, lang: "en", theme: "light", path: "/register.html"}
 	r := httptest.NewRequest(http.MethodPost, "/register.html", strings.NewReader("om-localpart=webtestblock&om-noweb=1&om-pass=secret&om-pass2=secret"))
@@ -74,7 +80,13 @@ func TestRegisterPostStoresWebmailBlock(t *testing.T) {
 		t.Fatal("registration did not store the webmail block")
 	}
 	entry := s.loadRegistry().Users["webtestblock"]
-	if entry["smtp"] != "smtppass123" || entry["pop3"] != "pop3pass456" {
-		t.Fatalf("credentials not stored: %#v", entry)
+	if entry["smtp"] != nil || entry["pop3"] != nil {
+		t.Fatalf("plaintext credentials stored: %#v", entry)
+	}
+	if got := s.entryCredential(entry, "smtp"); got != "smtppass123" {
+		t.Fatalf("smtp credential = %q", got)
+	}
+	if got := s.entryCredential(entry, "pop3"); got != "pop3pass456" {
+		t.Fatalf("pop3 credential = %q", got)
 	}
 }

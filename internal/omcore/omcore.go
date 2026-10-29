@@ -158,7 +158,55 @@ func StateLoad() State {
 	return st
 }
 
+func lockStateFile() (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(StatePath), 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(StatePath+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+func unlockStateFile(f *os.File) {
+	if f == nil {
+		return
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
+}
+
 func StateSave(st State) error {
+	f, err := lockStateFile()
+	if err != nil {
+		return err
+	}
+	defer unlockStateFile(f)
+	return stateSaveLocked(st)
+}
+
+func UpdateState(fn func(State) error) error {
+	f, err := lockStateFile()
+	if err != nil {
+		return err
+	}
+	defer unlockStateFile(f)
+	st := StateLoad()
+	if st == nil {
+		st = State{}
+	}
+	if err := fn(st); err != nil {
+		return err
+	}
+	return stateSaveLocked(st)
+}
+
+func stateSaveLocked(st State) error {
 	st["updated"] = time.Now().Format("2006-01-02T15:04:05")
 	if err := os.MkdirAll(filepath.Dir(StatePath), 0o755); err != nil {
 		return err
@@ -1794,7 +1842,18 @@ func BootEnv() {
 		{"CAPTCHA_DISABLE", CaptchaDisableValue(st)},
 		{"DEFAULT_THEME", StrDef(Obj(st, "design"), "theme", "light")},
 	}
+	raw := false
+	for _, arg := range os.Args[2:] {
+		if arg == "--raw" {
+			raw = true
+			break
+		}
+	}
 	for _, kv := range vals {
+		if raw {
+			fmt.Printf("%s\x00%s\x00", kv[0], kv[1])
+			continue
+		}
 		fmt.Printf("%s=%s\n", kv[0], ShellQuote(kv[1]))
 	}
 }

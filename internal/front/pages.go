@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"onionmail/internal/omcore"
 )
 
 const regLoginRow = `<tr><td>Login:</td><td><input type="text" name="om-localpart" size="40"></td></tr>`
@@ -173,17 +177,22 @@ func (s *Server) registerPost(ctx *reqCtx, w http.ResponseWriter, r *http.Reques
 	}
 	if success {
 		if omcoreBoolDefault(reg, "voucher_required", false) && voucherCode != "" {
-			state := s.omState()
-			if arr, ok := state["vouchers"].([]any); ok {
-				var kept []any
+			if err := omcore.UpdateState(func(st omcore.State) error {
+				arr, ok := st["vouchers"].([]any)
+				if !ok {
+					return nil
+				}
+				kept := make([]any, 0, len(arr))
 				for _, v := range arr {
 					if m, ok := v.(map[string]any); ok && fmt.Sprint(m["code"]) == voucherCode {
 						continue
 					}
 					kept = append(kept, v)
 				}
-				state["vouchers"] = kept
-				s.omStateSave(state)
+				st["vouchers"] = kept
+				return nil
+			}); err != nil {
+				s.logf("voucher state update failed: %v", err)
 			}
 		}
 		func() {
@@ -504,12 +513,13 @@ func (s *Server) webPost(ctx *reqCtx, w http.ResponseWriter, r *http.Request, pa
 			s.sendHTML(w, r, 403, s.loginPage(ctx, ctx.t("Webmail sign-in is disabled for this account.")), nil)
 			return
 		}
-		key := "web:" + user
-		if s.loginBlocked(key) {
+		clientKey, accountKey := loginKeys(user, s.clientID(w, r), requestSource(r))
+		if s.loginBlocked(clientKey) {
 			s.logf("web login rate limited: user=%q", user)
 			s.sendHTML(w, r, 429, s.loginPage(ctx, ctx.t("Too many sign-in attempts. Try again in a few minutes.")), [][2]string{{"Retry-After", "600"}})
 			return
 		}
+		time.Sleep(s.loginDelay(accountKey))
 		p, popPass, popErr := dialPOP3Any(user, pop3)
 		if popErr == nil {
 			p.quit()
@@ -530,7 +540,8 @@ func (s *Server) webPost(ctx *reqCtx, w http.ResponseWriter, r *http.Request, pa
 				stage = "smtp"
 			}
 			s.logf("web login failed: user=%q stage=%s", user, stage)
-			s.loginFailed(key)
+			s.loginFailed(clientKey)
+			s.loginFailed(accountKey)
 			if popErr != nil {
 				hint := ""
 				if reply, e := s.controlCommand("alias "+user, 10*time.Second); e == nil && strings.HasPrefix(reply, "+OK ") {
@@ -556,7 +567,8 @@ func (s *Server) webPost(ctx *reqCtx, w http.ResponseWriter, r *http.Request, pa
 		if smtpPass != "" {
 			smtp = smtpPass
 		}
-		s.loginSucceeded(key)
+		s.loginSucceeded(clientKey)
+		s.loginSucceeded(accountKey)
 		func() {
 			defer func() {
 				if rec := recover(); rec != nil {
@@ -587,34 +599,91 @@ func (s *Server) webPost(ctx *reqCtx, w http.ResponseWriter, r *http.Request, pa
 		return
 	}
 	if path == "/web/send" {
+		if !sameOrigin(r) {
+			s.sendHTML(w, r, 403, s.composePage(ctx, sess, "", ctx.t("CSRF error.")), nil)
+			return
+		}
 		var f map[string][]string
 		var att *outboundAttachment
 		maxAtt := s.maxAttachmentBytes()
 		if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
 			r.Body = http.MaxBytesReader(w, r.Body, maxAtt+2*1024*1024)
-			if err := r.ParseMultipartForm(8 << 20); err != nil {
-				if r.MultipartForm != nil {
-					_ = r.MultipartForm.RemoveAll()
-				}
+			mr, err := r.MultipartReader()
+			if err != nil {
 				s.sendHTML(w, r, 413, s.composePage(ctx, sess, "", ctx.tf("Attachment upload failed. Maximum size: {size}.", map[string]string{"size": humanSize(int(maxAtt))})), nil)
 				return
 			}
-			if r.MultipartForm != nil {
-				defer r.MultipartForm.RemoveAll()
-				f = r.MultipartForm.Value
-			}
-			file, fh, err := r.FormFile("attachment")
-			if err != nil && err != http.ErrMissingFile {
-				s.sendHTML(w, r, 400, s.composePage(ctx, sess, "", ctx.tf("Attachment upload failed. Maximum size: {size}.", map[string]string{"size": humanSize(int(maxAtt))})), nil)
-				return
-			}
-			if err == nil {
-				defer file.Close()
-				if fh.Size > maxAtt {
-					s.sendHTML(w, r, 413, s.composePage(ctx, sess, "", ctx.tf("Attachment is too large. Maximum size: {size}.", map[string]string{"size": humanSize(int(maxAtt))})), nil)
+			f = map[string][]string{}
+			csrfOK := false
+			haveAttachment := false
+			var tmp *os.File
+			defer func() {
+				if tmp != nil {
+					name := tmp.Name()
+					_ = tmp.Close()
+					_ = os.Remove(name)
+				}
+			}()
+			for {
+				part, perr := mr.NextPart()
+				if perr == io.EOF {
+					break
+				}
+				if perr != nil {
+					s.sendHTML(w, r, 413, s.composePage(ctx, sess, "", ctx.tf("Attachment upload failed. Maximum size: {size}.", map[string]string{"size": humanSize(int(maxAtt))})), nil)
 					return
 				}
-				att = &outboundAttachment{Name: fh.Filename, ContentType: fh.Header.Get("Content-Type"), Reader: file}
+				name := part.FormName()
+				if name == "csrf" {
+					b, _ := io.ReadAll(io.LimitReader(part, 512))
+					_ = part.Close()
+					if strings.TrimSpace(string(b)) == sess.CSRF {
+						csrfOK = true
+						continue
+					}
+					break
+				}
+				if part.FileName() != "" {
+					if !csrfOK {
+						_ = part.Close()
+						break
+					}
+					if haveAttachment {
+						_ = part.Close()
+						continue
+					}
+					tmpFile, terr := os.CreateTemp("", "omattach-*")
+					if terr != nil {
+						_ = part.Close()
+						s.sendHTML(w, r, 500, s.composePage(ctx, sess, "", ctx.t("Attachment upload failed.")), nil)
+						return
+					}
+					n, cerr := io.Copy(tmpFile, io.LimitReader(part, maxAtt+1))
+					_ = part.Close()
+					tmp = tmpFile
+					if cerr != nil {
+						s.sendHTML(w, r, 413, s.composePage(ctx, sess, "", ctx.tf("Attachment upload failed. Maximum size: {size}.", map[string]string{"size": humanSize(int(maxAtt))})), nil)
+						return
+					}
+					if n > maxAtt {
+						s.sendHTML(w, r, 413, s.composePage(ctx, sess, "", ctx.tf("Attachment is too large. Maximum size: {size}.", map[string]string{"size": humanSize(int(maxAtt))})), nil)
+						return
+					}
+					if _, serr := tmpFile.Seek(0, io.SeekStart); serr != nil {
+						s.sendHTML(w, r, 500, s.composePage(ctx, sess, "", ctx.t("Attachment upload failed.")), nil)
+						return
+					}
+					att = &outboundAttachment{Name: part.FileName(), ContentType: part.Header.Get("Content-Type"), Reader: tmpFile}
+					haveAttachment = true
+					continue
+				}
+				b, _ := io.ReadAll(io.LimitReader(part, 300_000))
+				_ = part.Close()
+				f[name] = append(f[name], string(b))
+			}
+			if !csrfOK {
+				s.sendHTML(w, r, 403, s.composePage(ctx, sess, "", ctx.t("CSRF error.")), nil)
+				return
 			}
 		} else {
 			f = s.form(r)

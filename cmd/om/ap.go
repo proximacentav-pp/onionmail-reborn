@@ -137,8 +137,8 @@ func apPasswd(args []string) int {
 	}
 	var pass string
 	if generate {
-		if length < 0 || length > 512 {
-			fmt.Fprintln(os.Stderr, "om ap passwd: length must be between 0 and 512")
+		if length < 8 || length > 512 {
+			fmt.Fprintln(os.Stderr, "om ap passwd: length must be between 8 and 512")
 			return 2
 		}
 		var err error
@@ -171,21 +171,7 @@ func apPasswd(args []string) int {
 	}
 	st := omcore.LoadState()
 	st["admin_password"] = pass
-	if pass == "" {
-		mode := os.FileMode(0o600)
-		if err := omcore.WriteKeep(omcore.ServicePass, "", &mode); err != nil {
-			fmt.Fprintln(os.Stderr, "om ap passwd:", err)
-			return 1
-		}
-		if conf := omcore.FindServerConf(omcore.StrDef(st, "nick", "")); conf != "" {
-			text := omcore.SetKeyServer(omcore.Read(conf), "PassWD", "")
-			_ = omcore.WriteKeep(conf, text, nil)
-		}
-		if err := omcore.StateSave(st); err != nil {
-			fmt.Fprintln(os.Stderr, "om ap passwd:", err)
-			return 1
-		}
-	} else if err := omcore.ApplySafe(st); err != nil {
+	if err := omcore.ApplySafe(st); err != nil {
 		fmt.Fprintln(os.Stderr, "om ap passwd:", err)
 		return 1
 	}
@@ -240,16 +226,26 @@ func readHiddenLine() (string, error) {
 
 func randomPassword(n int) (string, error) {
 	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-	if n == 0 {
+	if n <= 0 {
 		return "", nil
 	}
-	buf := make([]byte, n)
 	out := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	for i, b := range buf {
-		out[i] = alphabet[int(b)%len(alphabet)]
+	limit := 256 - 256%len(alphabet)
+	buf := make([]byte, n)
+	for i := 0; i < n; {
+		if _, err := rand.Read(buf); err != nil {
+			return "", err
+		}
+		for _, b := range buf {
+			if int(b) >= limit {
+				continue
+			}
+			out[i] = alphabet[int(b)%len(alphabet)]
+			i++
+			if i == n {
+				break
+			}
+		}
 	}
 	return string(out), nil
 }

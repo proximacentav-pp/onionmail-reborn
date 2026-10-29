@@ -96,7 +96,13 @@ restore_seed /opt/seed/var-onionmail /var/onionmail
 mkdir -p /var/log/onionmail
 
 if [ -f /etc/onionmail/om.json ] && [ -x /usr/local/bin/om ]; then
-  eval "$(/usr/local/bin/om __boot-env 2>/dev/null || true)"
+  while IFS= read -r -d '' key && IFS= read -r -d '' val; do
+    case "$key" in
+      NICK|CONTROL_ENABLED|CONTROL_PORT|CONTROL_UPSTREAM_IP|CONTROL_SSH_ENABLED|CONTROL_SSH_PORT|CONTROL_SSH_USER|CONTROL_SSH_MODE|DISPLAY_NAME|ONION|LOCALE|TOR_MODE|TOR_IP|TOR_PORT|USE_HOST_TOR|CAPTCHA_DISABLE|DEFAULT_THEME)
+        printf -v "$key" '%s' "$val"
+        ;;
+    esac
+  done < <(/usr/local/bin/om __boot-env --raw 2>/dev/null || true)
 fi
 if [ -z "${CONTROL_PORT:-}" ]; then
   CONTROL_PORT="$(awk 'tolower($1)=="controlport"{print $2; exit}' /etc/onionmail/control.conf 2>/dev/null || true)"
@@ -259,7 +265,7 @@ if [ ! -f "${MAILDIR}/server.bin" ]; then
   chmod 600 /etc/onionmail/bootToken
   BOOT="$(cat /etc/onionmail/bootToken)"
   ROOTPASS="$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-20)"
-  sed -i "s|^RootPass.*|RootPass\t${ROOTPASS}|" /etc/onionmail/control.conf
+  sed -i "s|^RootPass.*|RootPass\t$(escape_sed "$ROOTPASS")|" /etc/onionmail/control.conf
 
   # Password used for the local control port / server administration.
   if [ -f /etc/onionmail/.service_pass ]; then
@@ -274,9 +280,9 @@ if [ ! -f "${MAILDIR}/server.bin" ]; then
   SYSOP_POP3_PASS="${SYSOP_POP3_PASSWORD:-$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-24)}"
 
   mkdir -p /etc/onionmail/servers.d
-  sed -e "s#__NICK__#${NICK}#g" \
-      -e "s#__ONION__#${ONION}#g" \
-      -e "s#__PAR_PASSWD_SERV__#${SVCPASS}#g" \
+  sed -e "s#__NICK__#$(escape_sed "$NICK")#g" \
+      -e "s#__ONION__#$(escape_sed "$ONION")#g" \
+      -e "s#__PAR_PASSWD_SERV__#$(escape_sed "$SVCPASS")#g" \
       -e "s#__SMTP__#${SMTP_PORT}#g" \
       -e "s#__POP3__#${POP3_PORT}#g" \
       -e "s#__SSL_CC__#XX#g" \
@@ -292,8 +298,8 @@ if [ ! -f "${MAILDIR}/server.bin" ]; then
       -e "s#__FRIENDLY__#no#g" \
       -e "s#__ISHTTP__#yes#g" \
       -e "s#__HTTPMANF__#voucher#g" \
-      -e "s#__EXITDOM__#${ONION}#g" \
-      -e "s#__MAILDIR__#${MAILDIR}#g" \
+      -e "s#__EXITDOM__#$(escape_sed "$ONION")#g" \
+      -e "s#__MAILDIR__#$(escape_sed "$MAILDIR")#g" \
       /etc/onionmail/setupkit/servers.conf > "$SERVERS_CONF"
 
   printf '%s\n%s\n' "$SYSOP_SMTP_PASS" "$SYSOP_POP3_PASS" | \
@@ -362,6 +368,16 @@ chown -R debian-onionmail:debian-onionmail "${WWWROOT}" 2>/dev/null || true
 mkdir -p /var/lib/onionmail/webmail/sent
 chown -R debian-onionmail:debian-onionmail /var/lib/onionmail/webmail
 chmod 700 /var/lib/onionmail/webmail /var/lib/onionmail/webmail/sent
+
+# Key for encrypting cached mailbox credentials in registry.json. It lives in
+# the config volume, not in the mail volume, and is readable only by the front.
+REGISTRY_KEY="/etc/onionmail/registry.key"
+if [ ! -s "$REGISTRY_KEY" ]; then
+  umask 077
+  head -c 32 /dev/urandom > "$REGISTRY_KEY"
+fi
+chown debian-onionmail:debian-onionmail "$REGISTRY_KEY" 2>/dev/null || true
+chmod 600 "$REGISTRY_KEY"
 
 if [ "$SSH_CTRL_ENABLED" = "1" ]; then
   if [ -f /etc/onionmail/ssh/sshd.conf ] && [ -x /usr/sbin/sshd ]; then
