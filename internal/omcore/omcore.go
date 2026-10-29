@@ -3,6 +3,7 @@ package omcore
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,7 +31,6 @@ const (
 	TorLog           = "/var/log/onionmail/tor.log"
 	ServicePass      = "/etc/onionmail/.service_pass"
 	WWWRoot          = "/var/lib/onionmail/wwwroot"
-	VoucherLog       = "/var/log/onionmail/vouchers-tui.log"
 	DefaultLogo      = "/img/OM-BL.gif"
 	DefaultSmallLogo = ""
 	LogoMaxBytes     = 5 * 1024 * 1024
@@ -81,8 +81,6 @@ var ControlSSHAlgorithms = []SSHAlgorithm{
 	{ID: "ecdsa-curve224", Label: "ECDSA-Curve224", Kind: "ecdsa", Bits: 224},
 }
 
-var DefaultLangs = []string{"ru", "de", "fr", "en", "es"}
-
 type State map[string]any
 
 func Read(path string) string {
@@ -91,13 +89,6 @@ func Read(path string) string {
 		return ""
 	}
 	return string(b)
-}
-
-func ReadDefault(path, def string) string {
-	if b, err := os.ReadFile(path); err == nil {
-		return string(b)
-	}
-	return def
 }
 
 func WriteKeep(path, text string, mode *os.FileMode) error {
@@ -313,6 +304,57 @@ func ControlRootPass(st State) string {
 	return controlConfRootPass()
 }
 
+func ControlSSHPass(st State) string {
+	ctrl := Obj(st, "control")
+	if p := Str(ctrl, "ssh_password"); len(p) >= 8 {
+		return p
+	}
+	return ControlRootPass(st)
+}
+
+func EnsureSSHPassword() (string, error) {
+	var out string
+	err := UpdateState(func(st State) error {
+		ctrl := Obj(st, "control")
+		if p := Str(ctrl, "ssh_password"); len(p) >= 8 {
+			out = p
+			return nil
+		}
+		p := randomAlphaNum(24)
+		if p == "" {
+			return fmt.Errorf("cannot generate SSH password")
+		}
+		ctrl["ssh_password"] = p
+		st["control"] = ctrl
+		out = p
+		return nil
+	})
+	return out, err
+}
+
+func randomAlphaNum(n int) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	out := make([]byte, n)
+	limit := 256 - 256%len(alphabet)
+	buf := make([]byte, n)
+	for i := 0; i < n; {
+		if _, err := rand.Read(buf); err != nil {
+			return ""
+		}
+		for _, b := range buf {
+			if int(b) >= limit {
+				continue
+			}
+			out[i] = alphabet[int(b)%len(alphabet)]
+			i++
+			if i == n {
+				break
+			}
+		}
+	}
+	return string(out)
+}
+
 // ControlSSHFromState returns the optional encrypted control port settings.
 func ControlSSHFromState(st State) (enabled bool, port int, user, mode string) {
 	ctrl := Obj(st, "control")
@@ -520,6 +562,23 @@ func runSSHCmd(name string, args ...string) error {
 	return nil
 }
 
+func setSSHPasswordHash(user, hash string) error {
+	if strings.ContainsAny(user, ":\r\n") || strings.ContainsAny(hash, "\r\n") {
+		return fmt.Errorf("invalid SSH credential")
+	}
+	path, err := exec.LookPath("chpasswd")
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(path, "-e")
+	cmd.Stdin = strings.NewReader(user + ":" + hash + "\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("chpasswd: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func sshPasswordHash(pass string) (string, error) {
 	path, err := exec.LookPath("openssl")
 	if err != nil {
@@ -609,12 +668,12 @@ func EnsureControlSSH(st State) error {
 	if auth == "password" {
 		passwordAuth = "yes"
 	}
-	if pass := ControlRootPass(st); pass != "" {
+	if pass := ControlSSHPass(st); pass != "" {
 		hash, err := sshPasswordHash(pass)
 		if err != nil {
 			return err
 		}
-		if err := runSSHCmd("usermod", "-p", hash, sshUser); err != nil {
+		if err := setSSHPasswordHash(sshUser, hash); err != nil {
 			return err
 		}
 	}
@@ -804,13 +863,6 @@ func BoolStr(v string) bool {
 		return true
 	}
 	return false
-}
-
-func yesNo(v bool) string {
-	if v {
-		return "yes"
-	}
-	return "no"
 }
 
 func onOff(v bool, on, off string) string {
@@ -1027,6 +1079,9 @@ func NormalizeState(st, base State) State {
 	if u, _ := ctrl["ssh_user"].(string); !sshUserRe.MatchString(u) {
 		ctrl["ssh_user"] = DefaultSSHUser
 	}
+	if p, _ := ctrl["ssh_password"].(string); len(p) < 8 {
+		ctrl["ssh_password"] = randomAlphaNum(24)
+	}
 	mode, _ := ctrl["ssh_mode"].(string)
 	if mode != "sshtunnel" && mode != "unactive" {
 		mode = "unactive"
@@ -1098,10 +1153,79 @@ func SetKeyServer(text, key, value string) string {
 	return out
 }
 
+var nickPathKeys = []string{
+	"MailDir", "SMTPServer", "POP3Server", "HTTPRoot", "WWWRoot", "Onion",
+	"HiddenServiceDir", "ServerName", "Domain", "KeyPath", "SpamDir",
+	"LogDir", "TempDir", "DataDir",
+}
+
 func SetNickPaths(text, old, new string) string {
-	text = strings.ReplaceAll(text, old, new)
-	re := regexp.MustCompile(`(?m)^(\s*SMTPServer\s+)\S+`)
-	return re.ReplaceAllString(text, "${1}"+new)
+	if old == "" || old == new {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") {
+			continue
+		}
+		fields := strings.Fields(trim)
+		if len(fields) < 2 {
+			continue
+		}
+		key := fields[0]
+		replace := false
+		for _, k := range nickPathKeys {
+			if strings.EqualFold(key, k) {
+				replace = true
+				break
+			}
+		}
+		if !replace {
+			continue
+		}
+		idx := strings.Index(line, fields[1])
+		if idx < 0 {
+			continue
+		}
+		val := strings.TrimSpace(line[idx:])
+		if !strings.Contains(val, old) {
+			continue
+		}
+		newVal := replaceNickComponent(val, old, new)
+		lines[i] = line[:idx] + newVal
+	}
+	return strings.Join(lines, "\n")
+}
+
+func replaceNickComponent(s, old, new string) string {
+	quoted := strings.ContainsAny(s, `"'`)
+	s = strings.Trim(s, `"'`)
+	var out string
+	if strings.Contains(s, string(os.PathSeparator)) {
+		parts := strings.Split(s, string(os.PathSeparator))
+		for i, p := range parts {
+			if p == old {
+				parts[i] = new
+			}
+		}
+		out = strings.Join(parts, string(os.PathSeparator))
+		if strings.HasPrefix(s, "/") {
+			out = "/" + strings.TrimPrefix(out, "/")
+		}
+	} else {
+		parts := strings.Split(s, ".")
+		for i, p := range parts {
+			if p == old {
+				parts[i] = new
+			}
+		}
+		out = strings.Join(parts, ".")
+	}
+	if quoted {
+		out = `"` + out + `"`
+	}
+	return out
 }
 
 func MigrateNick(st State) {
@@ -1165,6 +1289,25 @@ func CaptchaDisableValue(st State) string {
 	return "yes"
 }
 
+func logApplyError(path string, err error) {
+	if err == nil {
+		return
+	}
+	_ = os.MkdirAll("/var/log/onionmail", 0o755)
+	f, ferr := os.OpenFile("/var/log/onionmail/apply.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+	if ferr != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s %s: %v\n", time.Now().UTC().Format(time.RFC3339), path, err)
+}
+
+func applyWrite(path, text string, mode *os.FileMode) {
+	if err := WriteKeep(path, text, mode); err != nil {
+		logApplyError(path, err)
+	}
+}
+
 func ApplyState(st State, doMigrate bool) string {
 	if doMigrate {
 		MigrateNick(st)
@@ -1197,17 +1340,17 @@ func ApplyState(st State, doMigrate bool) string {
 		text = regexp.MustCompile(`(?m)^(\s*MailDir\s+).*$`).ReplaceAllString(text, "${1}/var/onionmail/"+nick)
 		text = regexp.MustCompile(`(?m)^(\s*StatFile\s+).*$`).ReplaceAllString(text, "${1}/var/log/onionmail/"+nick+"-stats.csv")
 		text = regexp.MustCompile(`(?m)^(\s*BinStatFile\s+).*$`).ReplaceAllString(text, "${1}/var/log/onionmail/"+nick+"-stats.dat")
-		_ = WriteKeep(conf, text, nil)
+		applyWrite(conf, text, nil)
 	}
 	core := Read(CoreConf)
 	core = regexp.MustCompile(`(?im)^(\s*Debug\s+).*$`).ReplaceAllString(core, "${1}"+onOff(Bool(lim, "debug", false), "yes", "no"))
-	_ = WriteKeep(CoreConf, core, nil)
+	applyWrite(CoreConf, core, nil)
 	http := Read(HTTPConf)
 	http = regexp.MustCompile(`(?im)^(\s*HTTPServerName\s+).*$`).ReplaceAllString(http, "${1}"+StrDef(st, "server_name", "example")+" onionmail server")
-	_ = WriteKeep(HTTPConf, http, nil)
+	applyWrite(HTTPConf, http, nil)
 	pop := Read(POP3Conf)
 	pop = regexp.MustCompile(`(?im)^(\s*AutoDeleteReaded\s+).*$`).ReplaceAllString(pop, "${1}"+onOff(Bool(lim, "autodelete", false), "yes", "no"))
-	_ = WriteKeep(POP3Conf, pop, nil)
+	applyWrite(POP3Conf, pop, nil)
 	ctrl := Obj(st, "control")
 	ctrlPort := Int(ctrl, "port", controlConfPort())
 	if ctrlPort < 1024 || ctrlPort > 65535 {
@@ -1219,7 +1362,7 @@ func ApplyState(st State, doMigrate bool) string {
 	if rootPass := Str(ctrl, "root_password"); rootPass != "" {
 		ctrlConf = SetKeyFlat(ctrlConf, "RootPass", rootPass)
 	}
-	_ = WriteKeep(ControlConf, ctrlConf, nil)
+	applyWrite(ControlConf, ctrlConf, nil)
 	if Bool(ctrl, "ssh_enabled", false) {
 		if err := EnsureControlSSH(st); err != nil {
 			_ = os.WriteFile("/var/log/onionmail/ssh-setup.log", []byte(err.Error()+"\n"), 0o640)
@@ -1237,18 +1380,18 @@ func ApplyState(st State, doMigrate bool) string {
 			logo = DefaultLogo
 		}
 		c = SetKeyFlat(c, "mainlogo", logo)
-		_ = WriteKeep(cden, c, nil)
+		applyWrite(cden, c, nil)
 	}
 	if p := Str(st, "admin_password"); p != "" {
 		m := os.FileMode(0o600)
-		_ = WriteKeep(ServicePass, p, &m)
+		applyWrite(ServicePass, p, &m)
 		text := ""
 		if conf != "" {
 			text = Read(conf)
 		}
 		if text != "" {
 			text = SetKeyServer(text, "PassWD", p)
-			_ = WriteKeep(conf, text, nil)
+			applyWrite(conf, text, nil)
 		}
 	}
 	if st["friends"] != nil {
@@ -1258,7 +1401,7 @@ func ApplyState(st State, doMigrate bool) string {
 		}
 		if text != "" {
 			text = regexp.MustCompile(`(?is)\n\s*Friends\s*\{.*?\}\s*`).ReplaceAllString(text, "\n")
-			_ = WriteKeep(conf, text, nil)
+			applyWrite(conf, text, nil)
 		}
 		feedPath := "/etc/onionmail/feed.conf"
 		feed := Read(feedPath)
@@ -1274,20 +1417,22 @@ func ApplyState(st State, doMigrate bool) string {
 		} else {
 			feed = strings.TrimRight(feed, "\n") + "\n\n" + block + "\n"
 		}
-		_ = WriteKeep(feedPath, feed, nil)
+		applyWrite(feedPath, feed, nil)
 	}
 	envPath := "/etc/environment"
 	envText := Read(envPath)
 	envText = regexp.MustCompile(`(?m)^LANG=.*\n?`).ReplaceAllString(envText, "")
 	envText = strings.TrimRight(envText, "\n") + "\nLANG=" + StrDef(st, "locale", "C.UTF-8") + "\n"
-	_ = WriteKeep(envPath, envText, nil)
+	applyWrite(envPath, envText, nil)
 	oldDisplay := Str(st, "brand_name")
 	newDisplay := Str(st, "server_name")
 	if oldDisplay != "" && newDisplay != "" && oldDisplay != newDisplay {
 		BrandPages(oldDisplay, newDisplay)
 	}
 	st["brand_name"] = newDisplay
-	_ = StateSave(st)
+	if err := StateSave(st); err != nil {
+		logApplyError(StatePath, err)
+	}
 	return conf
 }
 
@@ -1320,7 +1465,7 @@ func BrandPages(old, newName string) {
 	})
 }
 
-func WriteTorrc(st State) string {
+func torrcText(st State) string {
 	tor := Obj(st, "tor")
 	nick := StrDef(st, "nick", "onionmail")
 	ip := StrDef(tor, "internal_ip", "127.0.0.1")
@@ -1362,8 +1507,14 @@ func WriteTorrc(st State) string {
 			}
 		}
 	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func WriteTorrc(st State) string {
+	nick := StrDef(st, "nick", "onionmail")
+	hsdir := "/var/lib/onionmail/HiddenServiceDir-1-" + nick
 	mode := os.FileMode(0o644)
-	_ = WriteKeep(Torrc, strings.Join(lines, "\n")+"\n", &mode)
+	_ = WriteKeep(Torrc, torrcText(st), &mode)
 	_ = os.MkdirAll("/var/lib/tor", 0o755)
 	_ = os.MkdirAll("/run/tor", 0o755)
 	_ = os.MkdirAll(hsdir, 0o755)
@@ -1605,8 +1756,8 @@ func Validate(st State) []string {
 	if !regexp.MustCompile(`^[A-Za-z0-9_.@-]{1,40}$`).MatchString(Str(st, "locale")) {
 		errs = append(errs, "LANG: invalid")
 	}
-	if len(Str(st, "admin_password")) < 8 {
-		errs = append(errs, "admin password: at least 8 chars")
+	if p := Str(st, "admin_password"); p != "" && !regexp.MustCompile(`^[!-~]{8,128}$`).MatchString(p) {
+		errs = append(errs, "admin password: 8-128 printable chars, no spaces")
 	}
 	lim := Obj(st, "limits")
 	ranges := [][3]any{
@@ -1728,22 +1879,21 @@ func TorConfigErrors(st State) []string {
 	if Str(tor, "mode") != "internal" {
 		return nil
 	}
-	var cfgErr error
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				cfgErr = fmt.Errorf("%v", r)
-			}
-		}()
-		WriteTorrc(st)
-	}()
-	if cfgErr != nil {
-		return []string{"tor config: " + cfgErr.Error()}
-	}
 	if _, err := os.Stat("/usr/bin/tor"); err != nil {
 		return nil
 	}
-	rc, out := RunArgs([]string{"tor", "--verify-config", "-f", Torrc}, 20*time.Second)
+	f, err := os.CreateTemp("", "om-torrc-check-*")
+	if err != nil {
+		return []string{"tor config: " + err.Error()}
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err := f.WriteString(torrcText(st)); err != nil {
+		_ = f.Close()
+		return []string{"tor config: " + err.Error()}
+	}
+	_ = f.Close()
+	rc, out := RunArgs([]string{"tor", "--verify-config", "-f", tmp}, 20*time.Second)
 	if rc == 0 {
 		return nil
 	}

@@ -382,11 +382,14 @@ chmod 600 "$REGISTRY_KEY"
 if [ "$SSH_CTRL_ENABLED" = "1" ]; then
   if [ -f /etc/onionmail/ssh/sshd.conf ] && [ -x /usr/sbin/sshd ]; then
     mkdir -p /run/sshd
-    if /usr/sbin/sshd -t -f /etc/onionmail/ssh/sshd.conf 2>/tmp/sshd-control-check; then
+    SSHD_CHECK="$(mktemp)"
+    if /usr/sbin/sshd -t -f /etc/onionmail/ssh/sshd.conf 2>"$SSHD_CHECK"; then
+      rm -f "$SSHD_CHECK"
       /usr/sbin/sshd -f /etc/onionmail/ssh/sshd.conf -E /var/log/onionmail/sshd-control.log
       log "encrypted control port on 127.0.0.1:${SSH_CTRL_PORT} (${SSH_CTRL_USER}@127.0.0.1)"
     else
-      log "ERROR: encrypted control port config is invalid: $(cat /tmp/sshd-control-check 2>/dev/null)"
+      log "ERROR: encrypted control port config is invalid: $(cat "$SSHD_CHECK" 2>/dev/null)"
+      rm -f "$SSHD_CHECK"
     fi
   else
     log "ERROR: encrypted control port is enabled but sshd/config is missing"

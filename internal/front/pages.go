@@ -347,7 +347,7 @@ func intVal(v any) int {
 }
 
 func (s *Server) messagePage(ctx *reqCtx, sess *Session, n int) string {
-	m, err := s.fetchMessage(sess.User, sess.POP3, n)
+	m, err := s.fetchMessage(sess.User, sess.POP3, n, ctx.t("(empty message)"), ctx.t("[... truncated ...]"))
 	if err != nil {
 		return s.pageShell(ctx, sess, "inbox", `<div class="err">`+html.EscapeString(ctx.tf("Could not read message: {err}", map[string]string{"err": err.Error()}))+`</div>`)
 	}
@@ -369,7 +369,7 @@ func (s *Server) messagePage(ctx *reqCtx, sess *Session, n int) string {
 	return s.pageShell(ctx, sess, "inbox", body)
 }
 
-func (s *Server) sentPage(ctx *reqCtx, sess *Session) string {
+func (s *Server) sentPage(ctx *reqCtx, sess *Session, ok string) string {
 	items := s.loadSent(sess.User)
 	var rows strings.Builder
 	if len(items) == 0 {
@@ -389,9 +389,13 @@ func (s *Server) sentPage(ctx *reqCtx, sess *Session) string {
 				html.EscapeString(subj), html.EscapeString(fmt.Sprint(it["date"])))
 		}
 	}
+	note := ""
+	if ok != "" {
+		note = `<div class="ok">` + html.EscapeString(ctx.t("Message sent.")) + `</div>`
+	}
 	return s.pageShell(ctx, sess, "sent", fmt.Sprintf(`<div class="top"><h1>%s</h1>
-<span class="muted">%s</span></div><div class="list">%s</div>`, html.EscapeString(ctx.t("Sent")),
-		html.EscapeString(ctx.tf("Messages: {n}", map[string]string{"n": strconv.Itoa(len(items))})), rows.String()))
+<span class="muted">%s</span></div>%s<div class="list">%s</div>`, html.EscapeString(ctx.t("Sent")),
+		html.EscapeString(ctx.tf("Messages: {n}", map[string]string{"n": strconv.Itoa(len(items))})), note, rows.String()))
 }
 
 func (s *Server) sentView(ctx *reqCtx, sess *Session, id string) string {
@@ -439,7 +443,6 @@ func (s *Server) webGet(ctx *reqCtx, w http.ResponseWriter, r *http.Request, pat
 		s.sendHTML(w, r, 200, s.loginPage(ctx, ""), nil)
 		return
 	}
-	s.setEmptyTranslations(ctx)
 	switch path {
 	case "/web/inbox":
 		s.sendHTML(w, r, 200, s.inboxPage(ctx, sess), nil)
@@ -484,7 +487,7 @@ func (s *Server) webGet(ctx *reqCtx, w http.ResponseWriter, r *http.Request, pat
 		}
 		s.sendDownload(w, att.Name, att.ContentType, att.Data)
 	case "/web/sent":
-		s.sendHTML(w, r, 200, s.sentPage(ctx, sess), nil)
+		s.sendHTML(w, r, 200, s.sentPage(ctx, sess, r.URL.Query().Get("ok")), nil)
 	case "/web/sent/view":
 		s.sendHTML(w, r, 200, s.sentView(ctx, sess, r.URL.Query().Get("id")), nil)
 	case "/web/compose":
@@ -578,7 +581,7 @@ func (s *Server) webPost(ctx *reqCtx, w http.ResponseWriter, r *http.Request, pa
 			s.registerUser(user, smtp, pop3, "", time.Now().Unix())
 		}()
 		token = s.newSession(user, smtp, pop3)
-		ck := sessionCookie(token)
+		ck := sessionCookie(token, s.cookieSecure(r))
 		s.redirect(w, r, "/web/inbox", [][2]string{{ck[0], ck[1]}})
 		return
 	}
@@ -586,7 +589,6 @@ func (s *Server) webPost(ctx *reqCtx, w http.ResponseWriter, r *http.Request, pa
 		s.redirect(w, r, "/web", nil)
 		return
 	}
-	s.setEmptyTranslations(ctx)
 	if path == "/web/logout" {
 		f := s.form(r)
 		if firstVal(f, "csrf") != sess.CSRF {
@@ -594,7 +596,7 @@ func (s *Server) webPost(ctx *reqCtx, w http.ResponseWriter, r *http.Request, pa
 			return
 		}
 		s.dropSession(token)
-		ck := clearCookie()
+		ck := clearCookie(s.cookieSecure(r))
 		s.redirect(w, r, "/web", [][2]string{{ck[0], ck[1]}})
 		return
 	}

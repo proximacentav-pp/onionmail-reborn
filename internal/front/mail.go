@@ -23,6 +23,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"onionmail/internal/omcore"
 )
@@ -39,6 +40,13 @@ func (p *pop3Conn) touch() {
 		return
 	}
 	_ = p.c.SetDeadline(time.Now().Add(p.timeout))
+}
+
+func loopbackTLSConfig() *tls.Config {
+	return &tls.Config{
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS12,
+	}
 }
 
 func dialPOP3(user, pass string, timeout time.Duration) (*pop3Conn, error) {
@@ -58,7 +66,7 @@ func dialPOP3(user, pass string, timeout time.Duration) (*pop3Conn, error) {
 		c.Close()
 		return nil, err
 	}
-	tc := tls.Client(c, &tls.Config{InsecureSkipVerify: true})
+	tc := tls.Client(c, loopbackTLSConfig())
 	if err := tc.Handshake(); err != nil {
 		c.Close()
 		return nil, err
@@ -198,7 +206,7 @@ func pop3Exists(login string) bool {
 	if err := p.cmd("STLS"); err != nil {
 		return false
 	}
-	tc := tls.Client(c, &tls.Config{InsecureSkipVerify: true})
+	tc := tls.Client(c, loopbackTLSConfig())
 	if err := tc.Handshake(); err != nil {
 		return false
 	}
@@ -241,7 +249,7 @@ func dialSMTP(user, pass string, timeout time.Duration) (*smtpConn, error) {
 		c.Close()
 		return nil, err
 	}
-	tc := tls.Client(c, &tls.Config{InsecureSkipVerify: true})
+	tc := tls.Client(c, loopbackTLSConfig())
 	if err := tc.Handshake(); err != nil {
 		c.Close()
 		return nil, err
@@ -429,10 +437,6 @@ func writeBase64Part(w io.Writer, r io.Reader) error {
 	return err
 }
 
-func (s *smtpConn) send(domain, from, to, subject, body string) error {
-	return s.sendWithAttachment(domain, from, to, subject, body, nil)
-}
-
 func (s *smtpConn) sendWithAttachment(domain, from, to, subject, body string, att *outboundAttachment) error {
 	if err := s.command("MAIL FROM:<" + from + ">"); err != nil {
 		return err
@@ -508,12 +512,6 @@ func (s *smtpConn) quit() {
 }
 
 func (s *smtpConn) close() { _ = s.c.Close() }
-
-var smtpUserPass struct{ user, pass string }
-
-func (s *Server) smtpSend(user, pass, from, to, subject, body string) error {
-	return s.smtpSendAttachment(user, pass, from, to, subject, body, nil)
-}
 
 func (s *Server) smtpSendAttachment(user, pass, from, to, subject, body string, att *outboundAttachment) error {
 	c, err := dialSMTP(user, pass, 30*time.Second)
@@ -639,7 +637,7 @@ func (s *Server) fetchRawMessage(user, password string, n int) ([]byte, error) {
 	return []byte(strings.Join(lines, "\r\n") + "\r\n"), nil
 }
 
-func (s *Server) fetchMessage(user, password string, n int) (map[string]any, error) {
+func (s *Server) fetchMessage(user, password string, n int, emptyText, truncatedText string) (map[string]any, error) {
 	raw, err := s.fetchRawMessage(user, password, n)
 	if err != nil {
 		return nil, err
@@ -648,7 +646,7 @@ func (s *Server) fetchMessage(user, password string, n int) (map[string]any, err
 	if err != nil {
 		return nil, err
 	}
-	body, atts := extractBody(msg)
+	body, atts := extractBody(msg, emptyText, truncatedText)
 	pgp := detectPGPText(body)
 	if pgp == "" {
 		pgp = detectPGPHeader(msg.Header.Get("Content-Type"))
@@ -789,8 +787,6 @@ func passwordVariants(p string) []string {
 		out = append(out, v)
 	}
 	add(p)
-	add(strings.TrimSpace(p))
-	add(strings.ReplaceAll(p, " ", "+"))
 	add(strings.ReplaceAll(strings.TrimSpace(p), " ", "+"))
 	return out
 }
@@ -858,14 +854,6 @@ func headerOr(v, def string) string {
 	return out
 }
 
-func headerOrT(v, def string) string {
-	out := decodeHeader(v)
-	if strings.TrimSpace(out) == "" {
-		return def
-	}
-	return out
-}
-
 func formatAddr(v string) string {
 	if v == "" {
 		return ""
@@ -911,7 +899,7 @@ func htmlToText(data string) string {
 	return strings.TrimSpace(data)
 }
 
-func extractBody(msg *mail.Message) (string, []emailAttachment) {
+func extractBody(msg *mail.Message, emptyText, truncatedText string) (string, []emailAttachment) {
 	var texts, htmls []string
 	var atts []emailAttachment
 	parts := 0
@@ -982,10 +970,14 @@ func extractBody(msg *mail.Message) (string, []emailAttachment) {
 		body = strings.Join(parts, "\n\n")
 	}
 	if strings.TrimSpace(body) == "" {
-		body = trEmptyMessage
+		body = emptyText
 	}
 	if len(body) > MaxBody {
-		body = body[:MaxBody] + "\n\n" + trTruncated
+		cut := MaxBody
+		for cut > 0 && !utf8.RuneStart(body[cut]) {
+			cut--
+		}
+		body = body[:cut] + "\n\n" + truncatedText
 	}
 	return body, atts
 }
@@ -995,14 +987,6 @@ const (
 	maxMimePartBytes  = 10 << 20
 	maxMimeTotalBytes = 20 << 20
 )
-
-var trEmptyMessage = "(empty message)"
-var trTruncated = "[... truncated ...]"
-
-func (s *Server) setEmptyTranslations(ctx *reqCtx) {
-	trEmptyMessage = ctx.t("(empty message)")
-	trTruncated = ctx.t("[... truncated ...]")
-}
 
 func decodeTransfer(enc string, raw []byte) []byte {
 	switch strings.ToLower(strings.TrimSpace(enc)) {
@@ -1056,12 +1040,27 @@ func (s *Server) dropSession(token string) {
 	delete(s.sessions, token)
 }
 
-func sessionCookie(token string) [2]string {
-	return [2]string{"Set-Cookie", fmt.Sprintf("%s=%s; Path=/web; HttpOnly; SameSite=Strict; Max-Age=%d", CookieName, token, SessionTTL)}
+func sessionCookie(token string, secure bool) [2]string {
+	sec := ""
+	if secure {
+		sec = "; Secure"
+	}
+	return [2]string{"Set-Cookie", fmt.Sprintf("%s=%s; Path=/web; HttpOnly; SameSite=Strict%s; Max-Age=%d", CookieName, token, sec, SessionTTL)}
 }
 
-func clearCookie() [2]string {
-	return [2]string{"Set-Cookie", CookieName + "=deleted; Path=/web; HttpOnly; SameSite=Strict; Max-Age=0"}
+func clearCookie(secure bool) [2]string {
+	sec := ""
+	if secure {
+		sec = "; Secure"
+	}
+	return [2]string{"Set-Cookie", CookieName + "=deleted; Path=/web; HttpOnly; SameSite=Strict" + sec + "; Max-Age=0"}
+}
+
+func (s *Server) cookieSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
 }
 
 var userRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,14}[a-z0-9]$`)
@@ -1450,6 +1449,8 @@ func (s *Server) registrySeed() error {
 
 func onionRandom() string {
 	b := make([]byte, 32)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
 	return base64.RawURLEncoding.EncodeToString(b)
 }

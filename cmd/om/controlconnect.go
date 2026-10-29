@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strconv"
 	"time"
 
 	"onionmail/internal/olang"
@@ -31,8 +30,8 @@ func controlportConnect(st omcore.State, encrypted bool) int {
 		conn, cleanup, err = omcore.OpenControlSSHTunnel(sshPort, port, sshUser)
 		label = fmt.Sprintf("SSH %s@127.0.0.1:%d -> 127.0.0.1:%d", sshUser, sshPort, port)
 	} else {
-		conn, err = net.DialTimeout("tcp", net.JoinHostPort(omcore.ControlLocalIP, strconv.Itoa(port)), 5*time.Second)
-		label = fmt.Sprintf("plain 127.0.0.1:%d", port)
+		conn, err = omcore.DialControl(port, 5*time.Second)
+		label = fmt.Sprintf("plain 127.0.0.1:%d (tries %s, %s)", port, omcore.ControlUpstreamIP, omcore.ControlLocalIP)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "om controlport: "+err.Error())

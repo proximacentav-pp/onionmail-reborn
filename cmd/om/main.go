@@ -33,7 +33,7 @@ func main() {
 	}
 	switch cmd {
 	case "-h", "--help", "help":
-		fmt.Println("Usage: om [setup|status|version|check|ap|skip-tor]")
+		fmt.Println("Usage: om [setup|status|version|check|ap|controlport|voucher|skip-tor]")
 		fmt.Println("  setup    interactive purple TUI")
 		fmt.Println("  status   show current state")
 		fmt.Println("  version  show om and OnionMail versions")
@@ -48,7 +48,11 @@ func main() {
 		fmt.Println("           om controlport ssh enable|disable")
 		fmt.Println("           om controlport ssh-port --set PORT | --show")
 		fmt.Println("           om controlport ssh-user --set USER | --show")
+		fmt.Println("           om controlport ssh-pass --set PASS | --show")
 		fmt.Println("           om controlport ssh-mode sshtunnel|unactive")
+		fmt.Println("           om controlport ssh-auth password|key")
+		fmt.Println("           om controlport ssh-algo <algorithm>")
+		fmt.Println("           om controlport ssh-key --show | --set <public-key> | --rm")
 		fmt.Println("           om controlport connect [--encrypted]")
 		fmt.Println("  skip-tor  disable onion and startup waits (localhost only):")
 		fmt.Println("           om skip-tor [on|off|status]")
@@ -167,8 +171,10 @@ func statusCmd() {
 		state = omcore.TorProgress()
 	} else if mode == "external" {
 		state = "unreachable"
-		var p int
-		fmt.Sscan(port, &p)
+		p := 0
+		if _, err := fmt.Sscan(port, &p); err != nil || p < 1 || p > 65535 {
+			p = 0
+		}
 		if omcore.TorSocketOK(ip, p) {
 			state = "reachable"
 		}

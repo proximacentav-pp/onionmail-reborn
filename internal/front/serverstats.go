@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -112,6 +113,9 @@ func (s *Server) writeServerSample() {
 		s.logf("server stats: %v", err)
 		return
 	}
+	if fi, err := os.Stat(path); err == nil && fi.Size() > 8<<20 {
+		s.rotateServerHistory(path)
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		s.logf("server stats: %v", err)
@@ -121,6 +125,24 @@ func (s *Server) writeServerSample() {
 	if err := json.NewEncoder(f).Encode(sm); err != nil {
 		s.logf("server stats: %v", err)
 	}
+}
+
+func (s *Server) rotateServerHistory(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	const keep = 20000
+	if len(lines) > keep {
+		lines = lines[len(lines)-keep:]
+	}
+	tmp := path + ".rot"
+	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		return
+	}
+	_ = os.Chmod(tmp, 0o600)
+	_ = os.Rename(tmp, path)
 }
 
 func (s *Server) diskCategories() (recv, sent, service, other int64) {
@@ -147,13 +169,30 @@ func (s *Server) diskCategories() (recv, sent, service, other int64) {
 	return
 }
 
+var duCache struct {
+	mu    sync.Mutex
+	at    time.Time
+	bytes int64
+}
+
 func duBytes(path string) int64 {
+	duCache.mu.Lock()
+	if time.Since(duCache.at) < time.Minute {
+		v := duCache.bytes
+		duCache.mu.Unlock()
+		return v
+	}
+	duCache.mu.Unlock()
 	out, _ := exec.Command("du", "-s", "-x", "-B1", path).Output()
 	fields := strings.Fields(string(out))
-	if len(fields) == 0 {
-		return 0
+	var n int64
+	if len(fields) > 0 {
+		n, _ = strconv.ParseInt(fields[0], 10, 64)
 	}
-	n, _ := strconv.ParseInt(fields[0], 10, 64)
+	duCache.mu.Lock()
+	duCache.at = time.Now()
+	duCache.bytes = n
+	duCache.mu.Unlock()
 	return n
 }
 

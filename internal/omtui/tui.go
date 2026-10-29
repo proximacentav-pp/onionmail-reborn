@@ -244,7 +244,15 @@ func (u *UI) readKey() string {
 	}
 	return ""
 }
-func runeLen(s string) int { return len([]rune(s)) }
+
+var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+
+func runeLen(s string) int {
+	if strings.IndexByte(s, '\x1b') >= 0 {
+		s = ansiEscapeRe.ReplaceAllString(s, "")
+	}
+	return len([]rune(s))
+}
 func trunc(s string, n int) string {
 	r := []rune(s)
 	if n <= 0 {
@@ -580,7 +588,7 @@ func (u *UI) valueFor(it item) string {
 		return strings.Repeat("*", min(20, len(v)))
 	}
 	if strings.HasPrefix(key, "reg_") {
-		return u.onOff(omcore.Bool(omcore.Obj(st, "registration"), key[4:], false))
+		return u.onOff(omcore.Bool(omcore.Obj(st, "registration"), key[4:], true))
 	}
 	switch key {
 	case "voucher_required", "exit_name_enabled", "exit_enabled":
@@ -947,6 +955,8 @@ func (u *UI) voucherScreen() {
 				_ = omcore.StateSave(u.st)
 				sel = len(u.vouchers()) - 1
 				msg = u.t("Voucher created") + ": " + code
+			} else if line == "" {
+				msg = u.t("Command failed")
 			} else {
 				msg = line
 			}

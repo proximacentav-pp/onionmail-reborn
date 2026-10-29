@@ -34,10 +34,22 @@ func OpenControlSSHTunnel(sshPort, ctrlPort int, user string) (net.Conn, func(),
 	if _, err := os.Stat(knownHosts); err != nil {
 		return nil, nil, fmt.Errorf("SSH host key is not known; restart the container after enabling")
 	}
-	localPort, err := freeLoopbackPort()
-	if err != nil {
-		return nil, nil, err
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		localPort, err := freeLoopbackPort()
+		if err != nil {
+			return nil, nil, err
+		}
+		c, cleanup, err := openControlSSHTunnelOnce(sshPort, ctrlPort, user, localPort, clientKey, knownHosts)
+		if err == nil {
+			return c, cleanup, nil
+		}
+		lastErr = err
 	}
+	return nil, nil, lastErr
+}
+
+func openControlSSHTunnelOnce(sshPort, ctrlPort int, user string, localPort int, clientKey, knownHosts string) (net.Conn, func(), error) {
 	sshPath, err := exec.LookPath("ssh")
 	if err != nil {
 		return nil, nil, fmt.Errorf("ssh client not found")

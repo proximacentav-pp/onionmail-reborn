@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -145,13 +144,12 @@ func (u *UI) controlPortScreen(encrypted bool) {
 		label = fmt.Sprintf("SSH %s@127.0.0.1:%d -> 127.0.0.1:%d", sshUser, sshPort, port)
 	} else {
 		var err error
-		addr := net.JoinHostPort(omcore.ControlLocalIP, strconv.Itoa(port))
-		conn, err = net.DialTimeout("tcp", addr, 5*time.Second)
+		conn, err = omcore.DialControl(port, 5*time.Second)
 		if err != nil {
 			u.setMsg(u.t("ControlPort connection error")+": "+err.Error(), false)
 			return
 		}
-		label = fmt.Sprintf("plain 127.0.0.1:%d", port)
+		label = fmt.Sprintf("plain 127.0.0.1:%d (tries %s, %s)", port, omcore.ControlUpstreamIP, omcore.ControlLocalIP)
 	}
 	defer conn.Close()
 	if cleanup != nil {

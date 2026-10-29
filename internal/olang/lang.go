@@ -91,15 +91,6 @@ func (b *Bundle) FrontFormat(lang, key string, args map[string]string) string {
 	return Format(text, args)
 }
 
-func (b *Bundle) VendorText(lang, key string) string {
-	if m, ok := b.Vendor[lang]; ok {
-		if v, ok := m[key]; ok {
-			return v
-		}
-	}
-	return key
-}
-
 func Format(text string, args map[string]string) string {
 	if len(args) == 0 {
 		return text

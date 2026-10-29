@@ -3,7 +3,7 @@ package front
 import (
 	"bytes"
 	"crypto/rand"
-	"crypto/tls"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -43,7 +43,6 @@ type Server struct {
 	SMTPPort     int
 	POP3Port     int
 	ServerDir    string
-	ControlConf  string
 	SentDir      string
 	MailDir      string
 	Registry     string
@@ -54,7 +53,6 @@ type Server struct {
 	Bundle       *olang.Bundle
 	AdminToken   string
 	Client       *http.Client
-	TLS          *tls.Config
 	Log          io.Writer
 
 	mu       sync.Mutex
@@ -71,6 +69,16 @@ type Server struct {
 
 	loginMu       sync.Mutex
 	loginFailures map[string][]time.Time
+
+	pop3Mu    sync.Mutex
+	pop3Cache map[string]pop3CacheEntry
+}
+
+type pop3CacheEntry struct {
+	count  int
+	bytes  int
+	status string
+	exp    time.Time
 }
 
 type Session struct {
@@ -117,7 +125,6 @@ func NewServer() (*Server, error) {
 		Nick: nick, DisplayName: display, Bind: bind, Port: port, Upstream: "127.0.0.1:18001",
 		SMTPPort: 20025, POP3Port: 20110,
 		ServerDir:    "/etc/onionmail/servers.d/1-" + nick + ".conf",
-		ControlConf:  "/etc/onionmail/control.conf",
 		SentDir:      "/var/lib/onionmail/webmail/sent",
 		MailDir:      "/var/onionmail/" + nick,
 		Registry:     "/var/lib/onionmail/webmail/registry.json",
@@ -133,11 +140,11 @@ func NewServer() (*Server, error) {
 			},
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		TLS:      &tls.Config{InsecureSkipVerify: true},
 		Log:      os.Stdout,
 		sessions: map[string]*Session{},
 
 		loginFailures: map[string][]time.Time{},
+		pop3Cache:     map[string]pop3CacheEntry{},
 	}
 	s.Onion, err = s.readOnion()
 	if err != nil {
@@ -306,7 +313,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			s.serveThemeAsset(ctx, w, r, path)
 			return
 		case path == "/healthz":
-			s.sendBytes(w, r, 200, []byte(s.Onion), "text/plain", nil)
+			s.sendBytes(w, r, 200, []byte("ok"), "text/plain", nil)
 			return
 		}
 		if s.adminHidden() && (path == "/logon.html" || strings.HasPrefix(path, "/admin")) {
@@ -338,6 +345,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			s.proxy(ctx, w, r)
 		}
 	case http.MethodPost:
+		if path != "/web/send" && r.ContentLength > 320_000 {
+			s.sendHTML(w, r, 413, s.smallPage(ctx, ctx.t("Request too large"), ctx.t("The submitted form exceeds the allowed size.")), nil)
+			return
+		}
 		if path != "/logon.html" && path != "/web/login" && !sameOrigin(r) {
 			s.logf("cross-origin POST rejected: %s", path)
 			s.sendHTML(w, r, 403, s.smallPage(ctx, ctx.t("Access denied"), ctx.t("Cross-origin request rejected.")), nil)
@@ -442,7 +453,7 @@ func (s *Server) sendBytes(w http.ResponseWriter, r *http.Request, code int, dat
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; "+scriptCSP()+"; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 	for _, kv := range extra {
 		w.Header().Add(kv[0], kv[1])
@@ -692,6 +703,10 @@ func (s *Server) relay(ctx *reqCtx, w http.ResponseWriter, r *http.Request, stat
 
 func (s *Server) proxy(ctx *reqCtx, w http.ResponseWriter, r *http.Request) {
 	var body []byte
+	if r.ContentLength > 10_000_000 {
+		s.sendHTML(w, r, 413, s.smallPage(ctx, ctx.t("Request too large"), ctx.t("The request body exceeds the allowed size.")), nil)
+		return
+	}
 	if r.ContentLength > 0 {
 		body = s.readBody(r, 10_000_000)
 	}
@@ -765,7 +780,9 @@ func (s *Server) adminAPI(r *http.Request, path string) any {
 
 func randomToken(n int) string {
 	b := make([]byte, n)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
@@ -924,11 +941,10 @@ func (s *Server) logonProxy(ctx *reqCtx, w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if user != "" {
-		failed := status >= 400 || bytes.Contains(data, []byte(`name="om-lo"`)) || bytes.Contains(data, []byte(`id="perrostr"`))
-		if failed {
+		if status >= 400 {
 			s.loginFailed(clientKey)
 			s.loginFailed(accountKey)
-		} else if status < 400 {
+		} else {
 			s.loginSucceeded(clientKey)
 			s.loginSucceeded(accountKey)
 		}
@@ -1016,15 +1032,28 @@ func (c *reqCtx) themeCSS(base string) string {
 	return base + toggle
 }
 
+func cloudSwapBody(suffix string) string {
+	return "(function(){function s(){var r='" + suffix + "';document.querySelectorAll('img').forEach(function(i){var u=i.getAttribute('src')||'';" +
+		"if(/CIEU\\.png(?:\\?|$)/.test(u)){i.src='/theme-assets/CIEU_'+r+'.png';}" +
+		"else if(/CIED\\.png(?:\\?|$)/.test(u)){i.src='/theme-assets/CIED_'+r+'.png';}});}" +
+		"if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',s);}else{s();}})();"
+}
+
+func scriptCSP() string {
+	var parts []string
+	for _, suffix := range []string{"white", "black"} {
+		sum := sha256.Sum256([]byte(cloudSwapBody(suffix)))
+		parts = append(parts, "'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'")
+	}
+	return "script-src " + strings.Join(parts, " ")
+}
+
 func (c *reqCtx) cloudSwapScript() string {
 	suffix := "white"
 	if c.theme == "dark" {
 		suffix = "black"
 	}
-	return "<script>(function(){function s(){var r='" + suffix + "';document.querySelectorAll('img').forEach(function(i){var u=i.getAttribute('src')||'';" +
-		"if(/CIEU\\.png(?:\\?|$)/.test(u)){i.src='/theme-assets/CIEU_'+r+'.png';}" +
-		"else if(/CIED\\.png(?:\\?|$)/.test(u)){i.src='/theme-assets/CIED_'+r+'.png';}});}" +
-		"if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',s);}else{s();}})();</script>"
+	return "<script>" + cloudSwapBody(suffix) + "</script>"
 }
 
 var logoRe = regexp.MustCompile(`^/img/[A-Za-z0-9._-]+$`)

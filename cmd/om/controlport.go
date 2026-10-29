@@ -20,6 +20,7 @@ func controlportCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "  om controlport ssh enable|disable")
 		fmt.Fprintln(os.Stderr, "  om controlport ssh-port --set <port> | --show")
 		fmt.Fprintln(os.Stderr, "  om controlport ssh-user --set <user> | --show")
+		fmt.Fprintln(os.Stderr, "  om controlport ssh-pass --set <password> | --show")
 		fmt.Fprintln(os.Stderr, "  om controlport ssh-mode sshtunnel|unactive")
 		fmt.Fprintln(os.Stderr, "  om controlport ssh-auth password|key")
 		fmt.Fprintln(os.Stderr, "  om controlport ssh-algo <algorithm>")
@@ -121,6 +122,23 @@ func controlportCmd(args []string) int {
 			return 1
 		}
 		ctrl["ssh_user"] = strings.ToLower(strings.TrimSpace(v))
+		changed = true
+	case "ssh-pass":
+		if len(args) > 1 && args[1] == "--show" {
+			p, err := omcore.EnsureSSHPassword()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "om controlport:", err)
+				return 1
+			}
+			fmt.Println(p)
+			return 0
+		}
+		v, ok := optionValue(args[1:], "--set")
+		if !ok || !regexp.MustCompile(`^[!-~]{8,128}$`).MatchString(v) {
+			fmt.Fprintln(os.Stderr, "om controlport: ssh password must be 8-128 printable chars, no spaces")
+			return 1
+		}
+		ctrl["ssh_password"] = v
 		changed = true
 	case "ssh-mode":
 		if len(args) < 2 {

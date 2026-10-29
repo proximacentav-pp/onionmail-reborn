@@ -177,7 +177,11 @@ func apPasswd(args []string) int {
 	}
 	nick := omcore.StrDef(st, "nick", "onionmail")
 	if generate {
-		fmt.Printf("Admin password for %s: %s\n", nick, pass)
+		if stdoutIsTerminal() {
+			fmt.Printf("Admin password for %s: %s\n", nick, pass)
+		} else {
+			fmt.Printf("Admin password for %s generated and saved to %s (not printed because stdout is not a terminal).\n", nick, omcore.ServicePass)
+		}
 	} else {
 		fmt.Printf("Admin password for %s updated.\n", nick)
 	}
@@ -219,7 +223,7 @@ func readHiddenLine() (string, error) {
 			_ = restore.Run()
 		}()
 	}
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	line, err := apInput.ReadString('\n')
 	fmt.Println()
 	return line, err
 }
@@ -312,7 +316,6 @@ func apDataStats(last bool) int {
 	mailDir := "/var/onionmail/" + nick
 	users := 0
 	known := 0
-	pop3 := ""
 	var reg apRegistry
 	if b, err := os.ReadFile(apRegistryPath()); err == nil {
 		_ = json.Unmarshal(b, &reg)
@@ -320,7 +323,8 @@ func apDataStats(last bool) int {
 	for _, u := range reg.Users {
 		users++
 		v := strings.TrimSpace(fmt.Sprint(u["pop3"]))
-		if v != "" && v != "<nil>" {
+		enc := strings.TrimSpace(fmt.Sprint(u["pop3_enc"]))
+		if (v != "" && v != "<nil>") || (enc != "" && enc != "<nil>") {
 			known++
 		}
 	}
@@ -337,7 +341,7 @@ func apDataStats(last bool) int {
 	}
 	msgCount := apCountFiles(mailDir+"/inbox", ".esf") + apCountFiles("/var/lib/onionmail/webmail/sent", ".json")
 	diskTotal, diskFree := apDisk()
-	exits, bad := apFeedLists()
+	exits, _ := apFeedLists()
 	if last {
 		fmt.Printf("%s users=%d inbox=%s sent=%s user-data=%s service=%s free=%s/%s\n",
 			nick, users, apSize(inboxSize), apSize(sentSize), apSize(userSize), apSize(service),
@@ -355,8 +359,6 @@ func apDataStats(last bool) int {
 	fmt.Printf("Free disk: %s of %s\n", apSize(diskFree), apSize(diskTotal))
 	fmt.Printf("Uptime: %s\n", apDuration(apUptime()))
 	fmt.Printf("Exit / Friends: %d / %d\n", exits, len(omcore.FriendsList(st)))
-	_ = pop3
-	_ = bad
 	return 0
 }
 
@@ -497,15 +499,35 @@ func apDuration(sec int) string {
 	return fmt.Sprintf("%dm", m)
 }
 
+func stdoutIsTerminal() bool {
+	fi, err := os.Stdout.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
 func apUptime() int {
-	st, err := os.Stat("/proc/1")
-	if err != nil {
-		return 0
+	btime := int64(0)
+	if b, err := os.ReadFile("/proc/stat"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "btime ") {
+				btime, _ = strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "btime ")), 10, 64)
+				break
+			}
+		}
 	}
-	if sys, ok := st.Sys().(*syscall.Stat_t); ok {
-		return int(time.Since(time.Unix(int64(sys.Ctim.Sec), int64(sys.Ctim.Nsec))).Seconds())
+	if b, err := os.ReadFile("/proc/1/stat"); err == nil {
+		fields := strings.Fields(string(b))
+		if len(fields) > 21 && btime > 0 {
+			start, _ := strconv.ParseInt(fields[21], 10, 64)
+			startSec := btime + start/100
+			if startSec > 0 && startSec <= time.Now().Unix() {
+				return int(time.Since(time.Unix(startSec, 0)).Seconds())
+			}
+		}
 	}
-	return int(time.Since(st.ModTime()).Seconds())
+	if st, err := os.Stat("/proc/1"); err == nil {
+		return int(time.Since(st.ModTime()).Seconds())
+	}
+	return 0
 }
 
 func apDisk() (int64, int64) {
@@ -546,9 +568,10 @@ func apLiveSample() apSample {
 
 func apTriggerSample(before int) bool {
 	path := filepath.Join(filepath.Dir(apHistoryPath()), ".stats-update")
-	if err := os.WriteFile(path, []byte("1"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("1"), 0o600); err != nil {
 		return false
 	}
+	defer func() { _ = os.Remove(path) }()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(apReadHistory()) > before {
@@ -556,7 +579,6 @@ func apTriggerSample(before int) bool {
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
-	_ = os.Remove(path)
 	return false
 }
 

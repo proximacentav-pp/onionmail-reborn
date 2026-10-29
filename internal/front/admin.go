@@ -7,11 +7,32 @@ import (
 	"net/http"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
+
+const pop3StatsTTL = 5 * time.Minute
+
+func (s *Server) cachedPOP3Stats(login string) (pop3CacheEntry, bool) {
+	s.pop3Mu.Lock()
+	defer s.pop3Mu.Unlock()
+	e, ok := s.pop3Cache[login]
+	if !ok || time.Now().After(e.exp) {
+		return pop3CacheEntry{}, false
+	}
+	return e, true
+}
+
+func (s *Server) storePOP3Stats(login string, count, bytes int, status string) {
+	s.pop3Mu.Lock()
+	defer s.pop3Mu.Unlock()
+	if s.pop3Cache == nil {
+		s.pop3Cache = map[string]pop3CacheEntry{}
+	}
+	s.pop3Cache[login] = pop3CacheEntry{count: count, bytes: bytes, status: status, exp: time.Now().Add(pop3StatsTTL)}
+}
 
 type adminUser struct {
 	Login     string
@@ -67,25 +88,75 @@ func (s *Server) collectDashboard(r *http.Request) dashboard {
 		}
 	}
 	sort.Strings(logins)
+	type statResult struct {
+		login     string
+		recvCount int
+		recvBytes int
+		status    string
+	}
+	stats := make(map[string]statResult, len(logins))
+	var pending []string
+	for _, login := range logins {
+		if r, ok := s.cachedPOP3Stats(login); ok {
+			stats[login] = statResult{login: login, recvCount: r.count, recvBytes: r.bytes, status: r.status}
+			continue
+		}
+		pending = append(pending, login)
+	}
+	if len(pending) > 0 {
+		jobs := make(chan string)
+		results := make(chan statResult, len(pending))
+		workers := 4
+		if len(pending) < workers {
+			workers = len(pending)
+		}
+		var wg sync.WaitGroup
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for login := range jobs {
+					entry := users[login]
+					if entry == nil {
+						entry = map[string]any{}
+					}
+					var res statResult
+					res.login = login
+					res.status = "nopass"
+					pop3 := s.entryCredential(entry, "pop3")
+					if pop3 != "" {
+						count, bytes, err := pop3Stats(login, pop3)
+						if err == nil {
+							res.recvCount, res.recvBytes, res.status = count, bytes, "ok"
+						} else {
+							res.status = "err"
+						}
+					} else if !pop3Exists(login) {
+						res.status = "err"
+					}
+					s.storePOP3Stats(res.login, res.recvCount, res.recvBytes, res.status)
+					results <- res
+				}
+			}()
+		}
+		for _, login := range pending {
+			jobs <- login
+		}
+		close(jobs)
+		wg.Wait()
+		close(results)
+		for res := range results {
+			stats[res.login] = res
+		}
+	}
 	for _, login := range logins {
 		entry := users[login]
 		if entry == nil {
 			entry = map[string]any{}
 		}
-		var recvCount, recvBytes int
-		status := "nopass"
+		res := stats[login]
+		recvCount, recvBytes, status := res.recvCount, res.recvBytes, res.status
 		pop3 := s.entryCredential(entry, "pop3")
-		if pop3 != "" && pop3 != "<nil>" {
-			var err error
-			recvCount, recvBytes, err = pop3Stats(login, pop3)
-			if err == nil {
-				status = "ok"
-			} else {
-				status = "err"
-			}
-		} else if !pop3Exists(login) {
-			status = "err"
-		}
 		sentItems := s.loadSent(login)
 		var sentBytes int64
 		for _, it := range sentItems {
@@ -159,8 +230,6 @@ func (s *Server) collectDashboard(r *http.Request) dashboard {
 	}
 }
 
-func (s *Server) countKnown() int { return 0 }
-
 func (d dashboard) known() int {
 	n := 0
 	for _, u := range d.Users {
@@ -211,7 +280,7 @@ func (s *Server) adminDashboard(ctx *reqCtx, w http.ResponseWriter, r *http.Requ
 			if !userRe.MatchString(login) {
 				errMsg = ctx.t("Login: 3–16 characters, Latin letters/digits/._-, no @.")
 			} else if exitlogin != "" && !validExitLogin(exitlogin) {
-				errMsg = ctx.t("Exit login: 3–30 characters, Latin letters/digits/._-.")
+				errMsg = ctx.t("Exit login: 4–32 characters, Latin letters/digits/._-.")
 			} else if smtp == "" && !s.storedSMTP(s.loadRegistry(), login) {
 				errMsg = ctx.t("Enter the SMTP password for a new mailbox.")
 			} else if _, _, err := pop3Stats(login, pop3); err != nil {
@@ -466,5 +535,3 @@ func statInt(stat map[string]any, key string) int64 {
 	}
 	return 0
 }
-
-func _unusedStrconv() { _ = strconv.Atoi }

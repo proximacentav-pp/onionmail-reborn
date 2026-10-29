@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"onionmail/internal/omcore"
 )
@@ -74,5 +75,20 @@ func main() {
 		fmt.Fprintln(os.Stderr, reply)
 		os.Exit(1)
 	}
-	fmt.Println(strings.TrimSpace(reply[3:]))
+	code := strings.TrimSpace(reply[3:])
+	if code != "" {
+		now := time.Now()
+		if err := omcore.UpdateState(func(st omcore.State) error {
+			vs := omcore.Arr(st, "vouchers")
+			vs = append(vs, map[string]any{
+				"code": code, "created": now.Format("2006-01-02 15:04"),
+				"days": n, "expires": now.AddDate(0, 0, n).Format("2006-01-02"),
+			})
+			st["vouchers"] = vs
+			return nil
+		}); err != nil {
+			fmt.Fprintln(os.Stderr, "om-voucher: warning: state not saved: "+err.Error())
+		}
+	}
+	fmt.Println(code)
 }
