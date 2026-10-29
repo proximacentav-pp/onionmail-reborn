@@ -118,21 +118,32 @@ func WriteKeep(path, text string, mode *os.FileMode) error {
 		}
 		haveOld = true
 	}
-	tmp := path + ".omtmp"
-	if err := os.WriteFile(tmp, []byte(text), 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".omtmp-*")
+	if err != nil {
 		return err
 	}
-	m := os.FileMode(0o644)
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.WriteString(text); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	m := os.FileMode(0o600)
 	if mode != nil {
 		m = *mode
 	} else if haveOld {
 		m = oldMode
 	}
-	_ = os.Chmod(tmp, m)
-	if haveOld {
-		_ = os.Chown(tmp, oldUID, oldGID)
+	if err := os.Chmod(tmpName, m); err != nil {
+		return err
 	}
-	return os.Rename(tmp, path)
+	if haveOld {
+		_ = os.Chown(tmpName, oldUID, oldGID)
+	}
+	return os.Rename(tmpName, path)
 }
 
 func StateLoad() State {
@@ -152,25 +163,35 @@ func StateSave(st State) error {
 	if err := os.MkdirAll(filepath.Dir(StatePath), 0o755); err != nil {
 		return err
 	}
-	tmp := StatePath + ".tmp"
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
 	}
 	b = append(b, '\n')
-	if err := os.WriteFile(tmp, b, 0o640); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(StatePath), ".om.json.tmp-*")
+	if err != nil {
 		return err
 	}
-	_ = os.Chmod(tmp, 0o640)
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	mode := os.FileMode(0o600)
 	if g, err := user.LookupGroup("debian-onionmail"); err == nil {
 		gid, _ := strconv.Atoi(g.Gid)
-		if err := os.Chown(tmp, 0, gid); err != nil {
-			_ = os.Chmod(tmp, 0o644)
+		if err := os.Chown(tmpName, 0, gid); err == nil {
+			mode = 0o640
 		}
-	} else {
-		_ = os.Chmod(tmp, 0o644)
 	}
-	return os.Rename(tmp, StatePath)
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, StatePath)
 }
 
 func FindServerConf(nick string) string {

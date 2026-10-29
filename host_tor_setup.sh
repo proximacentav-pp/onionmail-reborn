@@ -55,7 +55,33 @@ GEN
   fi
 fi
 
-chown -R root:root "$HS_DIR"
+detect_tor_user() {
+  if [ -n "${ONIONMAIL_TOR_USER:-}" ]; then
+    printf '%s\n' "$ONIONMAIL_TOR_USER"
+    return
+  fi
+  local u
+  u="$(systemctl show tor -p User --value 2>/dev/null || true)"
+  if [ -n "$u" ] && id "$u" >/dev/null 2>&1; then
+    printf '%s\n' "$u"
+    return
+  fi
+  u="$(ps -o user= -C tor 2>/dev/null | head -n1 | tr -d ' ' || true)"
+  if [ -n "$u" ] && id "$u" >/dev/null 2>&1; then
+    printf '%s\n' "$u"
+    return
+  fi
+  for u in debian-tor _tor tor; do
+    if id "$u" >/dev/null 2>&1; then
+      printf '%s\n' "$u"
+      return
+    fi
+  done
+  printf 'root\n'
+}
+
+TOR_USER="$(detect_tor_user)"
+chown -R "$TOR_USER:$TOR_USER" "$HS_DIR"
 chmod 700 "$HS_DIR"
 chmod 600 "$HS_DIR/hs_ed25519_secret_key" "$HS_DIR/hs_ed25519_public_key"
 [ -f "$HS_DIR/hostname" ] && chmod 600 "$HS_DIR/hostname"

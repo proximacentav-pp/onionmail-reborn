@@ -528,6 +528,14 @@ func (s *Server) maxAttachmentBytes() int64 {
 	return limit
 }
 
+func (s *Server) maxMessageBytes() int64 {
+	mb := int64(omcore.Int(s.omLimits(), "max_message_mb", 256))
+	if mb < 1 {
+		mb = 1
+	}
+	return mb * 1024 * 1024
+}
+
 func (s *Server) omState() map[string]any {
 	path := omcore.StatePath
 	st, err := os.Stat(path)

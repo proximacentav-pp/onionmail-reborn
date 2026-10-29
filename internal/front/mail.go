@@ -28,9 +28,17 @@ import (
 )
 
 type pop3Conn struct {
-	c net.Conn
-	r *bufio.Reader
-	w *bufio.Writer
+	c       net.Conn
+	r       *bufio.Reader
+	w       *bufio.Writer
+	timeout time.Duration
+}
+
+func (p *pop3Conn) touch() {
+	if p.timeout <= 0 {
+		return
+	}
+	_ = p.c.SetDeadline(time.Now().Add(p.timeout))
 }
 
 func dialPOP3(user, pass string, timeout time.Duration) (*pop3Conn, error) {
@@ -41,7 +49,7 @@ func dialPOP3(user, pass string, timeout time.Duration) (*pop3Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &pop3Conn{c: c, r: bufio.NewReader(c), w: bufio.NewWriter(c)}
+	p := &pop3Conn{c: c, r: bufio.NewReader(c), w: bufio.NewWriter(c), timeout: timeout}
 	if _, err := p.line(); err != nil {
 		c.Close()
 		return nil, err
@@ -71,6 +79,7 @@ var pop3Port = 20110
 var smtpPort = 20025
 
 func (p *pop3Conn) line() (string, error) {
+	p.touch()
 	s, err := p.r.ReadString('\n')
 	if err != nil {
 		return "", err
@@ -79,6 +88,7 @@ func (p *pop3Conn) line() (string, error) {
 }
 
 func (p *pop3Conn) cmd(s string) error {
+	p.touch()
 	if _, err := p.w.WriteString(s + "\r\n"); err != nil {
 		return err
 	}
@@ -96,6 +106,11 @@ func (p *pop3Conn) cmd(s string) error {
 }
 
 func (p *pop3Conn) multi(s string) ([]string, error) {
+	return p.multiLimited(s, 0)
+}
+
+func (p *pop3Conn) multiLimited(s string, maxBytes int64) ([]string, error) {
+	p.touch()
 	if _, err := p.w.WriteString(s + "\r\n"); err != nil {
 		return nil, err
 	}
@@ -110,6 +125,7 @@ func (p *pop3Conn) multi(s string) ([]string, error) {
 		return nil, fmt.Errorf("%s", line)
 	}
 	var out []string
+	var total int64
 	for {
 		l, err := p.line()
 		if err != nil {
@@ -121,12 +137,17 @@ func (p *pop3Conn) multi(s string) ([]string, error) {
 		if strings.HasPrefix(l, "..") {
 			l = l[1:]
 		}
+		total += int64(len(l)) + 2
+		if maxBytes > 0 && total > maxBytes {
+			return nil, fmt.Errorf("message exceeds size limit")
+		}
 		out = append(out, l)
 	}
 	return out, nil
 }
 
 func (p *pop3Conn) stat() (int, int, error) {
+	p.touch()
 	if _, err := p.w.WriteString("STAT\r\n"); err != nil {
 		return 0, 0, err
 	}
@@ -169,7 +190,7 @@ func pop3Exists(login string) bool {
 	if err != nil {
 		return false
 	}
-	p := &pop3Conn{c: c, r: bufio.NewReader(c), w: bufio.NewWriter(c)}
+	p := &pop3Conn{c: c, r: bufio.NewReader(c), w: bufio.NewWriter(c), timeout: 5 * time.Second}
 	defer p.quit()
 	if _, err := p.line(); err != nil {
 		return false
@@ -189,9 +210,17 @@ func pop3Exists(login string) bool {
 }
 
 type smtpConn struct {
-	c net.Conn
-	r *bufio.Reader
-	w *bufio.Writer
+	c       net.Conn
+	r       *bufio.Reader
+	w       *bufio.Writer
+	timeout time.Duration
+}
+
+func (s *smtpConn) touch() {
+	if s.timeout <= 0 {
+		return
+	}
+	_ = s.c.SetDeadline(time.Now().Add(s.timeout))
 }
 
 func dialSMTP(user, pass string, timeout time.Duration) (*smtpConn, error) {
@@ -199,7 +228,7 @@ func dialSMTP(user, pass string, timeout time.Duration) (*smtpConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &smtpConn{c: c, r: bufio.NewReader(c), w: bufio.NewWriter(c)}
+	s := &smtpConn{c: c, r: bufio.NewReader(c), w: bufio.NewWriter(c), timeout: timeout}
 	if _, err := s.response(); err != nil {
 		c.Close()
 		return nil, err
@@ -231,6 +260,7 @@ func dialSMTP(user, pass string, timeout time.Duration) (*smtpConn, error) {
 }
 
 func (s *smtpConn) response() (string, error) {
+	s.touch()
 	var out strings.Builder
 	for {
 		line, err := s.r.ReadString('\n')
@@ -254,6 +284,7 @@ func (s *smtpConn) response() (string, error) {
 }
 
 func (s *smtpConn) command(cmd string) error {
+	s.touch()
 	if _, err := s.w.WriteString(cmd + "\r\n"); err != nil {
 		return err
 	}
@@ -265,6 +296,7 @@ func (s *smtpConn) command(cmd string) error {
 }
 
 func (s *smtpConn) ehlo() (map[string]bool, error) {
+	s.touch()
 	if _, err := s.w.WriteString("EHLO localhost\r\n"); err != nil {
 		return nil, err
 	}
@@ -293,6 +325,7 @@ func (s *smtpConn) ehlo() (map[string]bool, error) {
 }
 
 func (s *smtpConn) auth(user, pass string, caps map[string]bool) error {
+	s.touch()
 	if caps["PLAIN"] || !caps["LOGIN"] {
 		token := base64.StdEncoding.EncodeToString([]byte("\x00" + user + "\x00" + pass))
 		if _, err := s.w.WriteString("AUTH PLAIN " + token + "\r\n"); err == nil {
@@ -343,8 +376,9 @@ func (d *smtpDataWriter) WriteString(v string) (int, error) {
 }
 
 type base64LineWriter struct {
-	w io.Writer
-	n int
+	w     io.Writer
+	n     int
+	dirty bool
 }
 
 func (l *base64LineWriter) Write(p []byte) (int, error) {
@@ -359,22 +393,25 @@ func (l *base64LineWriter) Write(p []byte) (int, error) {
 		}
 		written += space
 		l.n += space
+		l.dirty = true
 		p = p[space:]
 		if l.n == 76 {
 			if _, err := l.w.Write([]byte("\r\n")); err != nil {
 				return written, err
 			}
 			l.n = 0
+			l.dirty = false
 		}
 	}
 	return written, nil
 }
 
 func (l *base64LineWriter) Close() error {
-	if l.n == 0 {
+	if !l.dirty {
 		return nil
 	}
 	l.n = 0
+	l.dirty = false
 	_, err := l.w.Write([]byte("\r\n"))
 	return err
 }
@@ -414,6 +451,9 @@ func (s *smtpConn) sendWithAttachment(domain, from, to, subject, body string, at
 	}
 	if err := s.command("DATA"); err != nil {
 		return err
+	}
+	if s.timeout > 0 {
+		_ = s.c.SetDeadline(time.Now().Add(5 * time.Minute))
 	}
 	date := time.Now().Format(time.RFC1123Z)
 	mid := fmt.Sprintf("<%s@%s>", randomToken(18), domain)
@@ -592,7 +632,7 @@ func (s *Server) fetchRawMessage(user, password string, n int) ([]byte, error) {
 		return nil, err
 	}
 	defer p.quit()
-	lines, err := p.multi(fmt.Sprintf("RETR %d", n))
+	lines, err := p.multiLimited(fmt.Sprintf("RETR %d", n), s.maxMessageBytes())
 	if err != nil {
 		return nil, err
 	}
@@ -657,9 +697,14 @@ func extractAttachment(raw []byte, idx int) (emailAttachment, error) {
 	var found emailAttachment
 	ok := false
 	count := 0
+	parts := 0
 	var walk func(h mail.Header, body io.Reader, depth int)
 	walk = func(h mail.Header, body io.Reader, depth int) {
 		if depth > 20 || ok {
+			return
+		}
+		parts++
+		if parts > maxMimeParts {
 			return
 		}
 		mt, params := partMediaType(h)
@@ -869,9 +914,15 @@ func htmlToText(data string) string {
 func extractBody(msg *mail.Message) (string, []emailAttachment) {
 	var texts, htmls []string
 	var atts []emailAttachment
+	parts := 0
+	var total int64
 	var walk func(h mail.Header, body io.Reader, depth int)
 	walk = func(h mail.Header, body io.Reader, depth int) {
 		if depth > 20 {
+			return
+		}
+		parts++
+		if parts > maxMimeParts || total >= maxMimeTotalBytes {
 			return
 		}
 		mt, params := partMediaType(h)
@@ -896,7 +947,12 @@ func extractBody(msg *mail.Message) (string, []emailAttachment) {
 			}
 			return
 		}
-		raw, _ := io.ReadAll(io.LimitReader(body, 50_000_000))
+		budget := int64(maxMimeTotalBytes) - total
+		if budget > maxMimePartBytes {
+			budget = maxMimePartBytes
+		}
+		raw, _ := io.ReadAll(io.LimitReader(body, budget))
+		total += int64(len(raw))
 		dec := decodeTransfer(h.Get("Content-Transfer-Encoding"), raw)
 		if charset := params["charset"]; charset != "" {
 			if r, err := charsetReader(charset, bytes.NewReader(dec)); err == nil {
@@ -933,6 +989,12 @@ func extractBody(msg *mail.Message) (string, []emailAttachment) {
 	}
 	return body, atts
 }
+
+const (
+	maxMimeParts      = 200
+	maxMimePartBytes  = 10 << 20
+	maxMimeTotalBytes = 20 << 20
+)
 
 var trEmptyMessage = "(empty message)"
 var trTruncated = "[... truncated ...]"
